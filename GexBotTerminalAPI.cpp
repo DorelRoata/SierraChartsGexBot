@@ -12,14 +12,15 @@
 #include <set>
 #include <vector>
 #include <sstream>
+#include <iomanip>
 #define NOMINMAX
 #include <windows.h>
 #include <winhttp.h>
 #include <shlwapi.h>
 
 #pragma comment(lib, "shlwapi.lib")
-
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "sqlite3.lib")
 
 SCDLLName("GEX_TERMINAL_API")
 
