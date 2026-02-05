@@ -19,14 +19,21 @@
 #include <shlwapi.h>
 
 #pragma comment(lib, "shlwapi.lib")
+
 #pragma comment(lib, "winhttp.lib")
-#pragma comment(lib, "sqlite3.lib")
 
 SCDLLName("GEX_TERMINAL_API")
 
 // =========================
 //        STRUCTURES
 // =========================
+
+struct StrikeData
+{
+    double Strike;
+    double Value;
+    std::vector<double> Priors;
+};
 
 struct MajorsData
 {
@@ -57,6 +64,10 @@ struct ProfileMetaData
 
 struct GammaData
 {
+    // Données du profil
+    std::vector<StrikeData> ProfileData;
+    double MaxAbsValue = 1.0;
+
     // Majors endpoint
     MajorsData Majors;
 
@@ -322,12 +333,219 @@ std::string ExtractJsonValue(const std::string& json, const std::string& key)
     }
 }
 
+std::vector<std::string> ExtractJsonArray(const std::string& json, const std::string& key)
+{
+    std::vector<std::string> result;
+    std::string searchKey = "\"" + key + "\"";
+    size_t pos = json.find(searchKey);
+    if (pos == std::string::npos) return result;
+
+    pos = json.find('[', pos);
+    if (pos == std::string::npos) return result;
+
+    size_t start = pos + 1;
+    size_t depth = 1;
+    pos++;
+
+    while (pos < json.length() && depth > 0)
+    {
+        if (json[pos] == '[') depth++;
+        else if (json[pos] == ']') depth--;
+        pos++;
+    }
+
+    if (depth == 0)
+    {
+        std::string arrayContent = json.substr(start, pos - start - 1);
+
+        // Parse array elements
+        depth = 0;
+        size_t elemStart = 0;
+        for (size_t i = 0; i < arrayContent.length(); i++)
+        {
+            if (arrayContent[i] == '[') depth++;
+            else if (arrayContent[i] == ']') depth--;
+            else if (arrayContent[i] == ',' && depth == 0)
+            {
+                std::string elem = arrayContent.substr(elemStart, i - elemStart);
+                // Trim
+                while (!elem.empty() && (elem.front() == ' ' || elem.front() == '\t'))
+                    elem.erase(0, 1);
+                while (!elem.empty() && (elem.back() == ' ' || elem.back() == '\t'))
+                    elem.pop_back();
+                if (!elem.empty()) result.push_back(elem);
+                elemStart = i + 1;
+            }
+        }
+        // Last element
+        if (elemStart < arrayContent.length())
+        {
+            std::string elem = arrayContent.substr(elemStart);
+            while (!elem.empty() && (elem.front() == ' ' || elem.front() == '\t'))
+                elem.erase(0, 1);
+            while (!elem.empty() && (elem.back() == ' ' || elem.back() == '\t'))
+                elem.pop_back();
+            if (!elem.empty()) result.push_back(elem);
+        }
+    }
+
+    return result;
+}
+
+std::vector<double> ParsePriorsArray(const std::string& arrayStr)
+{
+    std::vector<double> result;
+    if (arrayStr.empty() || arrayStr[0] != '[') return result;
+
+    size_t start = 1;
+    size_t pos = 1;
+    while (pos < arrayStr.length() && arrayStr[pos] != ']')
+    {
+        if (arrayStr[pos] == ',')
+        {
+            std::string val = arrayStr.substr(start, pos - start);
+            result.push_back(StringToDouble(val));
+            start = pos + 1;
+        }
+        pos++;
+    }
+    if (start < pos)
+    {
+        std::string val = arrayStr.substr(start, pos - start);
+        result.push_back(StringToDouble(val));
+    }
+
+    return result;
+}
+
+std::vector<double> ParseStrikeRow(const std::string& rowStr)
+{
+    std::vector<double> result;
+    if (rowStr.empty() || rowStr[0] != '[') return result;
+
+    size_t start = 1;
+    size_t pos = 1;
+    int depth = 0;
+    bool inString = false;
+    bool escapeNext = false;
+
+    while (pos < rowStr.length())
+    {
+        if (escapeNext)
+        {
+            escapeNext = false;
+            pos++;
+            continue;
+        }
+
+        char c = rowStr[pos];
+
+        if (c == '\\' && inString)
+        {
+            escapeNext = true;
+            pos++;
+            continue;
+        }
+
+        if (c == '"' && !escapeNext)
+        {
+            inString = !inString;
+            pos++;
+            continue;
+        }
+
+        if (!inString)
+        {
+            if (c == '[') depth++;
+            else if (c == ']')
+            {
+                if (depth == 0)
+                {
+                    // End of array
+                    if (start < pos)
+                    {
+                        std::string val = rowStr.substr(start, pos - start);
+                        // Trim
+                        while (!val.empty() && (val.front() == ' ' || val.front() == '\t' || val.front() == '\r' || val.front() == '\n'))
+                            val.erase(0, 1);
+                        while (!val.empty() && (val.back() == ' ' || val.back() == '\t' || val.back() == '\r' || val.back() == '\n'))
+                            val.pop_back();
+                        if (!val.empty() && val[0] != '[')
+                            result.push_back(StringToDouble(val));
+                    }
+                    break;
+                }
+                depth--;
+            }
+            else if (c == ',' && depth == 0)
+            {
+                std::string val = rowStr.substr(start, pos - start);
+                // Trim
+                while (!val.empty() && (val.front() == ' ' || val.front() == '\t' || val.front() == '\r' || val.front() == '\n'))
+                    val.erase(0, 1);
+                while (!val.empty() && (val.back() == ' ' || val.back() == '\t' || val.back() == '\r' || val.back() == '\n'))
+                    val.pop_back();
+                if (!val.empty() && val[0] != '[')
+                    result.push_back(StringToDouble(val));
+                start = pos + 1;
+            }
+        }
+        pos++;
+    }
+
+    return result;
+}
+
+// Parse nested array (for priors)
+std::vector<double> ParseNestedArray(const std::string& arrayStr, size_t& pos)
+{
+    std::vector<double> result;
+    if (pos >= arrayStr.length() || arrayStr[pos] != '[') return result;
+
+    pos++; // Skip '['
+    size_t start = pos;
+    int depth = 1;
+
+    while (pos < arrayStr.length() && depth > 0)
+    {
+        if (arrayStr[pos] == '[') depth++;
+        else if (arrayStr[pos] == ']') depth--;
+        else if (arrayStr[pos] == ',' && depth == 1)
+        {
+            std::string val = arrayStr.substr(start, pos - start);
+            // Trim
+            while (!val.empty() && (val.front() == ' ' || val.front() == '\t'))
+                val.erase(0, 1);
+            while (!val.empty() && (val.back() == ' ' || val.back() == '\t'))
+                val.pop_back();
+            if (!val.empty())
+                result.push_back(StringToDouble(val));
+            start = pos + 1;
+        }
+        pos++;
+    }
+
+    // Last element
+    if (start < pos - 1)
+    {
+        std::string val = arrayStr.substr(start, pos - start - 1);
+        while (!val.empty() && (val.front() == ' ' || val.front() == '\t'))
+            val.erase(0, 1);
+        while (!val.empty() && (val.back() == ' ' || val.back() == '\t'))
+            val.pop_back();
+        if (!val.empty())
+            result.push_back(StringToDouble(val));
+    }
+
+    return result;
+}
+
 // =========================
 //        API FETCH
 // =========================
 
 bool FetchProfile(SCStudyInterfaceRef sc, GammaData* data, const std::string& ticker, 
-    const std::string& type, const std::string& agg, const std::string& apiKey)
+    const std::string& type, const std::string& agg, const std::string& apiKey, bool useOi)
 {
     std::string model = (type == "State" || type == "state") ? "state" : "classic";
     std::string url = "https://api.gexbot.com/" + UrlEncode(ticker) + "/" + model + "/" + 
@@ -347,6 +565,53 @@ bool FetchProfile(SCStudyInterfaceRef sc, GammaData* data, const std::string& ti
         data->LastError = "API error: " + errorMsg;
         return false;
     }
+
+    // Parse strikes array
+    std::vector<std::string> strikesArray = ExtractJsonArray(response, "strikes");
+
+    data->ProfileData.clear();
+    double maxAbs = 1.0;
+
+    for (const std::string& rowStr : strikesArray)
+    {
+        std::vector<double> row = ParseStrikeRow(rowStr);
+        if (row.size() < 2) continue;
+
+        StrikeData strike;
+        strike.Strike = row[0];
+
+        double gexVol = row.size() > 1 ? row[1] : 0.0;
+        double gexOi = row.size() > 2 ? row[2] : 0.0;
+
+        strike.Value = useOi ? gexOi : gexVol;
+
+        // Try to parse priors from the original JSON string if available
+        // Priors are typically at index 3 as a nested array
+        if (rowStr.length() > 0)
+        {
+            size_t priorsPos = 0;
+            size_t commaCount = 0;
+            for (size_t i = 0; i < rowStr.length(); i++)
+            {
+                if (rowStr[i] == ',' && commaCount == 2)
+                {
+                    priorsPos = i + 1;
+                    break;
+                }
+                if (rowStr[i] == ',') commaCount++;
+            }
+
+            if (priorsPos > 0 && priorsPos < rowStr.length() && rowStr[priorsPos] == '[')
+            {
+                strike.Priors = ParseNestedArray(rowStr, priorsPos);
+            }
+        }
+
+        data->ProfileData.push_back(strike);
+        maxAbs = (maxAbs > fabs(strike.Value)) ? maxAbs : fabs(strike.Value);
+    }
+
+    data->MaxAbsValue = (maxAbs > 0) ? maxAbs : 1.0;
 
     // Parse meta data
     data->ProfileMeta.zero_gamma = StringToDouble(ExtractJsonValue(response, "zero_gamma"));
@@ -417,7 +682,47 @@ bool FetchGreeks(SCStudyInterfaceRef sc, GammaData* data, const std::string& tic
     data->Greeks.major_long_gamma = StringToDouble(ExtractJsonValue(response, "major_long_gamma"));
     data->Greeks.major_short_gamma = StringToDouble(ExtractJsonValue(response, "major_short_gamma"));
 
-    // Optimized: No longer parsing mini_contracts/strikes as they are unused
+    // Parse mini_contracts for profile
+    std::vector<std::string> miniArray = ExtractJsonArray(response, "mini_contracts");
+
+    data->ProfileData.clear();
+    double maxAbs = 1.0;
+
+    for (const std::string& rowStr : miniArray)
+    {
+        std::vector<double> row = ParseStrikeRow(rowStr);
+        if (row.size() < 4) continue;
+
+        StrikeData strike;
+        strike.Strike = row[0];
+        strike.Value = row.size() > 3 ? row[3] : 0.0; // Value is typically at index 3 for greeks
+
+        // Parse priors from nested array (typically at index 4)
+        if (rowStr.length() > 0)
+        {
+            size_t priorsPos = 0;
+            size_t commaCount = 0;
+            for (size_t i = 0; i < rowStr.length(); i++)
+            {
+                if (rowStr[i] == ',' && commaCount == 3)
+                {
+                    priorsPos = i + 1;
+                    break;
+                }
+                if (rowStr[i] == ',') commaCount++;
+            }
+
+            if (priorsPos > 0 && priorsPos < rowStr.length() && rowStr[priorsPos] == '[')
+            {
+                strike.Priors = ParseNestedArray(rowStr, priorsPos);
+            }
+        }
+
+        data->ProfileData.push_back(strike);
+        maxAbs = (maxAbs > fabs(strike.Value)) ? maxAbs : fabs(strike.Value);
+    }
+
+    data->MaxAbsValue = (maxAbs > 0) ? maxAbs : 1.0;
 
     return true;
 }
@@ -855,8 +1160,9 @@ void FetchAllData(SCStudyInterfaceRef sc, GammaData* data)
     // Classic d'abord (toujours disponible dans l'abonnement classic) - Volume ET OI
     FetchMajors(sc, data, ticker, "classic", aggregation, apiKey);
 
-    // OPTIMIZED: Remove redundant duplicate call, and remove useOi parameter
-    FetchProfile(sc, data, ticker, "classic", aggregation, apiKey);
+    // OPTIMIZED: Removed duplicate call
+    FetchProfile(sc, data, ticker, "classic", aggregation, apiKey, false); // false = Volume
+    // FetchProfile(sc, data, ticker, "classic", aggregation, apiKey, true); // REMOVED redundant second call
     
     // Ensuite tester State (si disponible dans la clé API)
     std::string stateUrl = "https://api.gexbot.com/" + UrlEncode(ticker) + "/state/" +
@@ -874,7 +1180,7 @@ void FetchAllData(SCStudyInterfaceRef sc, GammaData* data)
         // State est disponible, récupérer les données state
         FetchGreeks(sc, data, ticker, "GEX", aggregation, apiKey);
         
-        // OPTIMIZED: Reuse stateResponse instead of fetching the same URL again
+        // OPTIMIZED: Reuse stateResponse instead of fetching again
         data->ProfileMeta.zero_gamma = StringToDouble(ExtractJsonValue(stateResponse, "zero_gamma"));
         data->ProfileMeta.sum_gex_vol = StringToDouble(ExtractJsonValue(stateResponse, "sum_gex_vol"));
         data->ProfileMeta.sum_gex_oi = StringToDouble(ExtractJsonValue(stateResponse, "sum_gex_oi"));
