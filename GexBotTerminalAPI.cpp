@@ -1,5 +1,6 @@
 #include "sierrachart.h"
-#include "sqlite3.h"
+// #include "sqlite3.h" // Removed to use amalgamation
+#include "sqlite3.cpp" // Include implementation directly for single-file build
 #include <set>
 #include <cfloat>
 #include <cmath>
