@@ -804,6 +804,11 @@ SCSFExport scsf_GexBotAPI(SCStudyInterfaceRef sc)
         ShowMajorLongGammaInput.Name = "Show Major Long Gamma"; ShowMajorLongGammaInput.SetYesNo(0);
         ShowMajorShortGammaInput.Name = "Show Major Short Gamma"; ShowMajorShortGammaInput.SetYesNo(0);
 
+        SCInputRef DataSourceInput = sc.Input[17];
+        DataSourceInput.Name = "Data Source";
+        DataSourceInput.SetCustomInputStrings("Web API (Master);Local CSV (Viewer)");
+        DataSourceInput.SetCustomInputIndex(0);
+
         return;
     }
 
@@ -827,6 +832,7 @@ SCSFExport scsf_GexBotAPI(SCStudyInterfaceRef sc)
 
     // Get parameters (lightweight - just reading input refs)
     float multiplier = MultiplierInput.GetFloat();
+    int dataSource = sc.Input[17].GetIndex(); // 0 = API, 1 = CSV
     bool isLastBar = (sc.Index == sc.ArraySize - 1);
 
     // ========================================
@@ -855,146 +861,184 @@ SCSFExport scsf_GexBotAPI(SCStudyInterfaceRef sc)
             data->HistoricalDataLoaded = true;
         }
 
-        // ------ STATE: IDLE ------
-        if (data->CurrentFetchState == FETCH_IDLE)
+        if (!readPath.empty() && !ticker.empty() && (paramsChanged || !data->HistoricalDataLoaded))
         {
-            bool needsRefresh = false;
+            LoadRecentGammaFiles(sc, data, readPath, ticker, daysToLoad, tzOffset, refreshInterval);
+            data->HistoricalDataLoaded = true;
+        }
 
-            if (apiKey.empty() || apiKey == "YOUR_API_KEY")
+        // =========================
+        //    MODE: LOCAL CSV (VIEWER)
+        // =========================
+        if (dataSource == 1) 
+        {
+             // Poll for file changes every refreshInterval
+            double timeSinceUpdate = (sc.CurrentSystemDateTime - data->LastUpdate).GetAsDouble() * 86400.0;
+            if (timeSinceUpdate >= refreshInterval && !readPath.empty())
             {
-                // No valid API key, skip
+                SCDateTime today = sc.GetCurrentDateTime();
+                std::string suffix = FormatDateSuffix(today);
+                std::string path = readPath + "\\Tickers " + suffix + "\\" + ticker + ".csv";
+                
+                if (FileExists(path))
+                {
+                    // Reload today's file to catch updates from the Master chart
+                    int rows = LoadSingleCSV(sc, path, tzOffset, data);
+                    if (rows > 0)
+                    {
+                         // Update "LastUpdate" so we don't spam read
+                         data->LastUpdate = sc.CurrentSystemDateTime;
+                         data->LastError = "OK (CSV Updated)";
+                    }
+                }
             }
-            else if (apiKey != data->LastApiKey || ticker != data->LastTicker || refreshInterval != data->LastRefreshInterval)
+        }
+        // =========================
+        //    MODE: WEB API (MASTER)
+        // =========================
+        else 
+        {
+            // ------ STATE: IDLE ------
+            if (data->CurrentFetchState == FETCH_IDLE)
             {
-                needsRefresh = true;
-            }
-            else
-            {
-                double timeSinceUpdate = (sc.CurrentSystemDateTime - data->LastUpdate).GetAsDouble() * 86400.0;
-                if (timeSinceUpdate >= refreshInterval)
+                bool needsRefresh = false;
+
+                if (apiKey.empty() || apiKey == "YOUR_API_KEY")
+                {
+                    // No valid API key, skip
+                }
+                else if (apiKey != data->LastApiKey || ticker != data->LastTicker || refreshInterval != data->LastRefreshInterval)
+                {
                     needsRefresh = true;
-            }
-
-            if (needsRefresh)
-            {
-                SCString url;
-                url.Format("https://api.gexbot.com/%s/classic/zero/majors?key=%s",
-                    UrlEncode(ticker).c_str(), UrlEncode(apiKey).c_str());
-                
-                if (sc.MakeHTTPRequest(url))
-                {
-                    data->CurrentFetchState = FETCH_MAJORS_SENT;
-                    data->FetchCycleDataDirty = false;
                 }
                 else
                 {
-                    data->LastError = "Failed to send majors request";
+                    double timeSinceUpdate = (sc.CurrentSystemDateTime - data->LastUpdate).GetAsDouble() * 86400.0;
+                    if (timeSinceUpdate >= refreshInterval)
+                        needsRefresh = true;
+                }
+    
+                if (needsRefresh)
+                {
+                    SCString url;
+                    url.Format("https://api.gexbot.com/%s/classic/zero/majors?key=%s",
+                        UrlEncode(ticker).c_str(), UrlEncode(apiKey).c_str());
+                    
+                    if (sc.MakeHTTPRequest(url))
+                    {
+                        data->CurrentFetchState = FETCH_MAJORS_SENT;
+                        data->FetchCycleDataDirty = false;
+                    }
+                    else
+                    {
+                        data->LastError = "Failed to send majors request";
+                    }
                 }
             }
-        }
-
-        // ------ STATE: MAJORS_SENT ------
-        else if (data->CurrentFetchState == FETCH_MAJORS_SENT && sc.HTTPResponse != "")
-        {
-            std::string response = sc.HTTPResponse.GetChars();
-            if (ParseMajorsResponse(response, data))
-                data->FetchCycleDataDirty = true;
-
-            SCString url;
-            url.Format("https://api.gexbot.com/%s/classic/zero?key=%s",
-                UrlEncode(ticker).c_str(), UrlEncode(apiKey).c_str());
-            
-            if (sc.MakeHTTPRequest(url))
-                data->CurrentFetchState = FETCH_PROFILE_SENT;
-            else
+    
+            // ------ STATE: MAJORS_SENT ------
+            else if (data->CurrentFetchState == FETCH_MAJORS_SENT && sc.HTTPResponse != "")
             {
-                data->LastError = "Failed to send profile request";
-                data->CurrentFetchState = FETCH_ERROR;
-            }
-        }
-
-        // ------ STATE: PROFILE_SENT ------
-        else if (data->CurrentFetchState == FETCH_PROFILE_SENT && sc.HTTPResponse != "")
-        {
-            std::string response = sc.HTTPResponse.GetChars();
-            if (ParseProfileResponse(response, data))
-                data->FetchCycleDataDirty = true;
-
-            SCString url;
-            url.Format("https://api.gexbot.com/%s/state/zero?key=%s",
-                UrlEncode(ticker).c_str(), UrlEncode(apiKey).c_str());
-            
-            if (sc.MakeHTTPRequest(url))
-                data->CurrentFetchState = FETCH_STATE_CHECK_SENT;
-            else
-            {
-                data->LastError = "Failed to send state check request";
-                data->CurrentFetchState = FETCH_ERROR;
-            }
-        }
-
-        // ------ STATE: STATE_CHECK_SENT ------
-        else if (data->CurrentFetchState == FETCH_STATE_CHECK_SENT && sc.HTTPResponse != "")
-        {
-            std::string response = sc.HTTPResponse.GetChars();
-            data->StateEndpointAvailable = ParseStateCheckResponse(response, data);
-            
-            if (data->StateEndpointAvailable)
-            {
-                data->FetchCycleDataDirty = true;
-
+                std::string response = sc.HTTPResponse.GetChars();
+                if (ParseMajorsResponse(response, data))
+                    data->FetchCycleDataDirty = true;
+    
                 SCString url;
-                url.Format("https://api.gexbot.com/%s/state/GEX_zero?key=%s",
+                url.Format("https://api.gexbot.com/%s/classic/zero?key=%s",
                     UrlEncode(ticker).c_str(), UrlEncode(apiKey).c_str());
                 
                 if (sc.MakeHTTPRequest(url))
-                    data->CurrentFetchState = FETCH_GREEKS_SENT;
+                    data->CurrentFetchState = FETCH_PROFILE_SENT;
                 else
                 {
-                    data->LastError = "Failed to send greeks request";
+                    data->LastError = "Failed to send profile request";
                     data->CurrentFetchState = FETCH_ERROR;
                 }
             }
-            else
+    
+            // ------ STATE: PROFILE_SENT ------
+            else if (data->CurrentFetchState == FETCH_PROFILE_SENT && sc.HTTPResponse != "")
             {
-                // State not available - finish with classic only
+                std::string response = sc.HTTPResponse.GetChars();
+                if (ParseProfileResponse(response, data))
+                    data->FetchCycleDataDirty = true;
+    
+                SCString url;
+                url.Format("https://api.gexbot.com/%s/state/zero?key=%s",
+                    UrlEncode(ticker).c_str(), UrlEncode(apiKey).c_str());
+                
+                if (sc.MakeHTTPRequest(url))
+                    data->CurrentFetchState = FETCH_STATE_CHECK_SENT;
+                else
+                {
+                    data->LastError = "Failed to send state check request";
+                    data->CurrentFetchState = FETCH_ERROR;
+                }
+            }
+    
+            // ------ STATE: STATE_CHECK_SENT ------
+            else if (data->CurrentFetchState == FETCH_STATE_CHECK_SENT && sc.HTTPResponse != "")
+            {
+                std::string response = sc.HTTPResponse.GetChars();
+                data->StateEndpointAvailable = ParseStateCheckResponse(response, data);
+                
+                if (data->StateEndpointAvailable)
+                {
+                    data->FetchCycleDataDirty = true;
+    
+                    SCString url;
+                    url.Format("https://api.gexbot.com/%s/state/GEX_zero?key=%s",
+                        UrlEncode(ticker).c_str(), UrlEncode(apiKey).c_str());
+                    
+                    if (sc.MakeHTTPRequest(url))
+                        data->CurrentFetchState = FETCH_GREEKS_SENT;
+                    else
+                    {
+                        data->LastError = "Failed to send greeks request";
+                        data->CurrentFetchState = FETCH_ERROR;
+                    }
+                }
+                else
+                {
+                    // State not available - finish with classic only
+                    data->LastApiKey = apiKey;
+                    data->LastTicker = ticker;
+                    data->LastRefreshInterval = refreshInterval;
+                    data->LastUpdate = sc.CurrentSystemDateTime;
+                    data->LastError = "OK (classic only)";
+                    data->CurrentFetchState = FETCH_IDLE;
+    
+                    if (data->FetchCycleDataDirty)
+                        UpdateMapsAndWriteCSV(sc, data, ticker, writePath);
+                }
+            }
+    
+            // ------ STATE: GREEKS_SENT ------
+            else if (data->CurrentFetchState == FETCH_GREEKS_SENT && sc.HTTPResponse != "")
+            {
+                std::string response = sc.HTTPResponse.GetChars();
+                if (ParseGreeksResponse(response, data))
+                    data->FetchCycleDataDirty = true;
+    
                 data->LastApiKey = apiKey;
                 data->LastTicker = ticker;
                 data->LastRefreshInterval = refreshInterval;
                 data->LastUpdate = sc.CurrentSystemDateTime;
-                data->LastError = "OK (classic only)";
+                data->LastError = "OK";
                 data->CurrentFetchState = FETCH_IDLE;
-
+    
                 if (data->FetchCycleDataDirty)
                     UpdateMapsAndWriteCSV(sc, data, ticker, writePath);
             }
-        }
-
-        // ------ STATE: GREEKS_SENT ------
-        else if (data->CurrentFetchState == FETCH_GREEKS_SENT && sc.HTTPResponse != "")
-        {
-            std::string response = sc.HTTPResponse.GetChars();
-            if (ParseGreeksResponse(response, data))
-                data->FetchCycleDataDirty = true;
-
-            data->LastApiKey = apiKey;
-            data->LastTicker = ticker;
-            data->LastRefreshInterval = refreshInterval;
-            data->LastUpdate = sc.CurrentSystemDateTime;
-            data->LastError = "OK";
-            data->CurrentFetchState = FETCH_IDLE;
-
-            if (data->FetchCycleDataDirty)
-                UpdateMapsAndWriteCSV(sc, data, ticker, writePath);
-        }
-
-        // ------ STATE: ERROR ------
-        else if (data->CurrentFetchState == FETCH_ERROR)
-        {
-            double timeSinceUpdate = (sc.CurrentSystemDateTime - data->LastUpdate).GetAsDouble() * 86400.0;
-            if (timeSinceUpdate >= refreshInterval)
-                data->CurrentFetchState = FETCH_IDLE;
-        }
+    
+            // ------ STATE: ERROR ------
+            else if (data->CurrentFetchState == FETCH_ERROR)
+            {
+                double timeSinceUpdate = (sc.CurrentSystemDateTime - data->LastUpdate).GetAsDouble() * 86400.0;
+                if (timeSinceUpdate >= refreshInterval)
+                    data->CurrentFetchState = FETCH_IDLE;
+            }
+        } // End else (Web API Mode)
     }
 
     // ========================================
