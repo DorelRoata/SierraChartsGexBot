@@ -63,3 +63,20 @@ graph TD
     *   **API Key**: Enter your valid GexBot API key.
     *   **Ticker**: Specify the ticker (e.g., `ES_SPX`).
     *   **CSV Paths**: Set valid local paths for reading/writing the CSV files (e.g., `C:\GexBot\Data`).
+
+## Proposed Subgraph Mapping & CSV Structure
+
+The following mapping is planned for future updates to align the CSV output and Subgraphs with the default GEXBOT API DLL standards:
+
+| SG Index (UI) | Subgraph Name (Label) | Description |
+| :--- | :--- | :--- |
+| **SG1** | Major Call Gamma by Volume | Major Positive Gamma Level (derived from Volume) |
+| **SG2** | Major Put Gamma by Volume | Major Negative Gamma Level (derived from Volume) |
+| **SG3** | Zero Gamma | Zero Gamma Level |
+| **SG4** | Major Call Gamma by OI | Major Positive Gamma Level (derived from OI) |
+| **SG5** | Major Put Gamma by OI | Major Negative Gamma Level (derived from OI) |
+| **SG6** | Major Long Gamma | Major Long Gamma Level |
+| **SG7** | Major Short Gamma | Major Short Gamma Level |
+| **SG8** | Net GEX Volume | Net Gamma Exposure (Volume) |
+| **SG9** | Net GEX OI | Net Gamma Exposure (Open Interest) |
+
