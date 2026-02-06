@@ -4,8 +4,8 @@ This project contains a custom C++ study for **Sierra Chart** that integrates wi
 
 ## Features
 
-*   **Real-time API Integration**: Fetches Majors, Profile, and Greeks data from `api.gexbot.com` using WinHTTP.
-*   **Local Data Caching**: Uses **SQLite** to store historical data locally, enabling fast retrieval and "forward fill" logic for days without immediate API data.
+*   **Real-time API Integration**: Fetches Majors, Profile, and Greeks data from `api.gexbot.com` using Sierra Chart's Async HTTP.
+*   **Local Data Caching**: Uses **CSV Files** to store historical data locally, enabling fast retrieval and "forward fill" logic for days without immediate API data.
 *   **Comprehensive Visualization**: Plots key metrics as subgraphs:
     *   Zero Gamma Levels
     *   Major Positive/Negative Vol & OI
@@ -32,7 +32,7 @@ graph TD
         end
 
         subgraph "Local Storage"
-            DB[(SQLite Database<br/>.db files)]
+            DB[(CSV Storage<br/>.csv files)]
         end
     end
 
@@ -43,7 +43,7 @@ graph TD
     
     %% Internal Study Components
     subgraph "Study Components"
-        HTTP[WinHTTP Client]
+        HTTP[SC Async HTTP]
         JSON[JSON Parser]
         Cache[Data Structures<br/>Maps & Vectors]
         Renderer[Subgraph Renderer]
@@ -57,9 +57,9 @@ graph TD
 
 ## Setup & Usage
 
-1.  **Compile**: Use the Sierra Chart C++ compiler to build the `scriptgexbotmarketterminal.txt` (rename to `.cpp` if needed).
+1.  **Compile**: Use the Sierra Chart C++ compiler to build `GexBotTerminalAPI.cpp`.
 2.  **Add to Chart**: Add the **GEX BOT API** study to your chart.
 3.  **Configuration**:
     *   **API Key**: Enter your valid GexBot API key.
     *   **Ticker**: Specify the ticker (e.g., `ES_SPX`).
-    *   **Database Paths**: Set valid local paths for reading/writing the SQLite database.
+    *   **CSV Paths**: Set valid local paths for reading/writing the CSV files (e.g., `C:\GexBot\Data`).

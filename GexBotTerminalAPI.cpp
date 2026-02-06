@@ -1,28 +1,35 @@
 #include "sierrachart.h"
-#include "sqlite3.h"
 #include <set>
 #include <cfloat>
 #include <cmath>
 #include <algorithm>
 #include <cstdio>
 #include <limits>
-#include <oleauto.h>
+
 #include <string>
 #include <map>
-#include <set>
 #include <vector>
 #include <sstream>
 #include <iomanip>
 #define NOMINMAX
 #include <windows.h>
-#include <winhttp.h>
-#include <shlwapi.h>
 
-#pragma comment(lib, "shlwapi.lib")
-#pragma comment(lib, "winhttp.lib")
-#pragma comment(lib, "sqlite3.lib")
 
 SCDLLName("GEX_TERMINAL_API")
+
+// =========================
+//     ASYNC FETCH STATES
+// =========================
+
+enum FetchState
+{
+    FETCH_IDLE = 0,
+    FETCH_MAJORS_SENT,
+    FETCH_PROFILE_SENT,
+    FETCH_STATE_CHECK_SENT,
+    FETCH_GREEKS_SENT,
+    FETCH_ERROR
+};
 
 // =========================
 //        STRUCTURES
@@ -66,38 +73,38 @@ struct GammaData
     // Greeks majors
     GreeksData Greeks;
 
-    // Cache et état
+    // Cache and state
     SCDateTime LastUpdate;
     std::string LastError;
-    bool IsProcessing = false;
 
-    // Paramètres de cache
+    // Cache parameters
     std::string LastApiKey;
     std::string LastTicker;
     int LastRefreshInterval = -1;
 
-    // Base de données SQLite
-    sqlite3* Database = nullptr;
-    std::string DatabasePath;
+    // Async HTTP state machine
+    FetchState CurrentFetchState = FETCH_IDLE;
+    bool StateEndpointAvailable = false;
+    bool FetchCycleDataDirty = false;
 
-    // Maps historiques pour forward fill (comme Quantower) - utilisant SCDateTime directement
-    std::map<SCDateTime, float> zeroMap;          // timestamp -> zero_gamma
-    std::map<SCDateTime, float> posVolMap;       // timestamp -> major_pos_vol
-    std::map<SCDateTime, float> negVolMap;       // timestamp -> major_neg_vol
-    std::map<SCDateTime, float> posOiMap;        // timestamp -> major_pos_oi
-    std::map<SCDateTime, float> negOiMap;        // timestamp -> major_neg_oi
-    std::map<SCDateTime, float> netMap;          // timestamp -> net (calculated)
-    std::map<SCDateTime, float> longMap;        // timestamp -> major_long_gamma
-    std::map<SCDateTime, float> shortMap;       // timestamp -> major_short_gamma
-    std::map<SCDateTime, float> majPosMap;       // timestamp -> major_positive
-    std::map<SCDateTime, float> majNegMap;       // timestamp -> major_negative
-    std::map<SCDateTime, float> spotMap;         // timestamp -> spot
+    // Historical maps for forward fill - using SCDateTime directly
+    std::map<SCDateTime, float> zeroMap;
+    std::map<SCDateTime, float> posVolMap;
+    std::map<SCDateTime, float> negVolMap;
+    std::map<SCDateTime, float> posOiMap;
+    std::map<SCDateTime, float> negOiMap;
+    std::map<SCDateTime, float> netMap;
+    std::map<SCDateTime, float> longMap;
+    std::map<SCDateTime, float> shortMap;
+    std::map<SCDateTime, float> majPosMap;
+    std::map<SCDateTime, float> majNegMap;
+    std::map<SCDateTime, float> spotMap;
     
-    std::set<std::string> CachedDBPaths;
+    std::set<std::string> CachedFilePaths;
     SCDateTime LastRefreshTime;
     
     std::string LastBasePath;
-    std::string LastTickerForDB;  // Séparé de LastTicker pour éviter conflit
+    std::string LastTickerForFile;
     int LastDaysCount = -1;
     int LastTZOffset = -999;
     
@@ -105,7 +112,7 @@ struct GammaData
 };
 
 // =========================
-//        UTILITAIRES
+//        UTILITIES
 // =========================
 
 double StringToDouble(const std::string& str)
@@ -142,145 +149,6 @@ std::string UrlEncode(const std::string& str)
     }
 
     return encoded.str();
-}
-
-// =========================
-//        HTTP CLIENT
-// =========================
-
-std::string HttpGet(const std::string& url, int timeoutSeconds = 30)
-{
-    std::string result;
-    HINTERNET hSession = nullptr;
-    HINTERNET hConnect = nullptr;
-    HINTERNET hRequest = nullptr;
-
-    try
-    {
-        // Parse URL
-        std::string protocol, host, path;
-        size_t protocolEnd = url.find("://");
-        if (protocolEnd == std::string::npos) return "";
-
-        protocol = url.substr(0, protocolEnd);
-        size_t hostStart = protocolEnd + 3;
-        size_t pathStart = url.find('/', hostStart);
-        
-        if (pathStart == std::string::npos)
-        {
-            host = url.substr(hostStart);
-            path = "/";
-        }
-        else
-        {
-            host = url.substr(hostStart, pathStart - hostStart);
-            path = url.substr(pathStart);
-        }
-
-        // Validate protocol
-        if (protocol != "http" && protocol != "https") return "";
-
-        // Initialize WinHTTP
-        hSession = WinHttpOpen(L"GEX_TERMINAL_API/1.0",
-            WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-            WINHTTP_NO_PROXY_NAME,
-            WINHTTP_NO_PROXY_BYPASS, 0);
-
-        if (!hSession) return "";
-
-        // Set timeout
-        DWORD timeout = timeoutSeconds * 1000;
-        WinHttpSetTimeouts(hSession, timeout, timeout, timeout, timeout);
-
-        // Connect
-        std::wstring wHost(host.begin(), host.end());
-        hConnect = WinHttpConnect(hSession, wHost.c_str(),
-            (protocol == "https") ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT, 0);
-
-        if (!hConnect)
-        {
-            WinHttpCloseHandle(hSession);
-            return "";
-        }
-
-        // Create request
-        std::wstring wPath(path.begin(), path.end());
-        hRequest = WinHttpOpenRequest(hConnect, L"GET", wPath.c_str(),
-            NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
-            (protocol == "https") ? WINHTTP_FLAG_SECURE : 0);
-
-        if (!hRequest)
-        {
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            return "";
-        }
-
-        // Send request
-        if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-            WINHTTP_NO_REQUEST_DATA, 0, 0, 0))
-        {
-            WinHttpCloseHandle(hRequest);
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            return "";
-        }
-
-        // Receive response
-        if (!WinHttpReceiveResponse(hRequest, NULL))
-        {
-            WinHttpCloseHandle(hRequest);
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            return "";
-        }
-
-        // Check HTTP status code
-        DWORD statusCode = 0;
-        DWORD statusCodeSize = sizeof(statusCode);
-        if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-            WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusCodeSize, WINHTTP_NO_HEADER_INDEX))
-        {
-            if (statusCode != 200)
-            {
-                WinHttpCloseHandle(hRequest);
-                WinHttpCloseHandle(hConnect);
-                WinHttpCloseHandle(hSession);
-                return "";
-            }
-        }
-
-        // Read data
-        DWORD bytesAvailable = 0;
-        DWORD bytesRead = 0;
-        char buffer[8192]; // Increased buffer size
-
-        do
-        {
-            if (!WinHttpQueryDataAvailable(hRequest, &bytesAvailable))
-                break;
-
-            if (bytesAvailable == 0) break;
-
-            DWORD toRead = (bytesAvailable < sizeof(buffer)) ? bytesAvailable : sizeof(buffer);
-            if (!WinHttpReadData(hRequest, buffer, toRead, &bytesRead))
-                break;
-
-            if (bytesRead > 0)
-                result.append(buffer, bytesRead);
-        } while (bytesRead > 0);
-    }
-    catch (...)
-    {
-        result.clear();
-    }
-
-    // Cleanup
-    if (hRequest) WinHttpCloseHandle(hRequest);
-    if (hConnect) WinHttpCloseHandle(hConnect);
-    if (hSession) WinHttpCloseHandle(hSession);
-
-    return result;
 }
 
 // =========================
@@ -323,55 +191,17 @@ std::string ExtractJsonValue(const std::string& json, const std::string& key)
 }
 
 // =========================
-//        API FETCH
+//    RESPONSE PARSERS
 // =========================
 
-bool FetchProfile(SCStudyInterfaceRef sc, GammaData* data, const std::string& ticker, 
-    const std::string& type, const std::string& agg, const std::string& apiKey)
+bool ParseMajorsResponse(const std::string& response, GammaData* data)
 {
-    std::string model = (type == "State" || type == "state") ? "state" : "classic";
-    std::string url = "https://api.gexbot.com/" + UrlEncode(ticker) + "/" + model + "/" + 
-        UrlEncode(agg) + "?key=" + UrlEncode(apiKey);
-
-    std::string response = HttpGet(url, 30);
-    if (response.empty())
-    {
-        data->LastError = "HTTP request failed or empty response";
-        return false;
-    }
-
-    // Check for error in JSON response
-    std::string errorMsg = ExtractJsonValue(response, "error");
-    if (!errorMsg.empty())
-    {
-        data->LastError = "API error: " + errorMsg;
-        return false;
-    }
-
-    // Parse meta data
-    data->ProfileMeta.zero_gamma = StringToDouble(ExtractJsonValue(response, "zero_gamma"));
-    data->ProfileMeta.sum_gex_vol = StringToDouble(ExtractJsonValue(response, "sum_gex_vol"));
-    data->ProfileMeta.sum_gex_oi = StringToDouble(ExtractJsonValue(response, "sum_gex_oi"));
-    data->ProfileMeta.delta_risk_reversal = StringToDouble(ExtractJsonValue(response, "delta_risk_reversal"));
-
-    return true;
-}
-
-bool FetchMajors(SCStudyInterfaceRef sc, GammaData* data, const std::string& ticker,
-    const std::string& type, const std::string& agg, const std::string& apiKey)
-{
-    std::string model = (type == "State" || type == "state") ? "state" : "classic";
-    std::string url = "https://api.gexbot.com/" + UrlEncode(ticker) + "/" + model + "/" +
-        UrlEncode(agg) + "/majors?key=" + UrlEncode(apiKey);
-
-    std::string response = HttpGet(url, 30);
-    if (response.empty())
+    if (response.empty() || response == "ERROR" || response == "HTTP_REQUEST_ERROR")
     {
         data->LastError = "Majors HTTP request failed or empty response";
         return false;
     }
 
-    // Check for error in JSON response
     std::string errorMsg = ExtractJsonValue(response, "error");
     if (!errorMsg.empty())
     {
@@ -390,21 +220,55 @@ bool FetchMajors(SCStudyInterfaceRef sc, GammaData* data, const std::string& tic
     return true;
 }
 
-bool FetchGreeks(SCStudyInterfaceRef sc, GammaData* data, const std::string& ticker,
-    const std::string& greek, const std::string& agg, const std::string& apiKey)
+bool ParseProfileResponse(const std::string& response, GammaData* data)
 {
-    std::string greekKey = greek + "_" + agg;
-    std::string url = "https://api.gexbot.com/" + UrlEncode(ticker) + "/state/" +
-        UrlEncode(greekKey) + "?key=" + UrlEncode(apiKey);
+    if (response.empty() || response == "ERROR" || response == "HTTP_REQUEST_ERROR")
+    {
+        data->LastError = "Profile HTTP request failed or empty response";
+        return false;
+    }
 
-    std::string response = HttpGet(url, 30);
-    if (response.empty())
+    std::string errorMsg = ExtractJsonValue(response, "error");
+    if (!errorMsg.empty())
+    {
+        data->LastError = "API error: " + errorMsg;
+        return false;
+    }
+
+    data->ProfileMeta.zero_gamma = StringToDouble(ExtractJsonValue(response, "zero_gamma"));
+    data->ProfileMeta.sum_gex_vol = StringToDouble(ExtractJsonValue(response, "sum_gex_vol"));
+    data->ProfileMeta.sum_gex_oi = StringToDouble(ExtractJsonValue(response, "sum_gex_oi"));
+    data->ProfileMeta.delta_risk_reversal = StringToDouble(ExtractJsonValue(response, "delta_risk_reversal"));
+
+    return true;
+}
+
+bool ParseStateCheckResponse(const std::string& response, GammaData* data)
+{
+    if (response.empty() || response == "ERROR" || response == "HTTP_REQUEST_ERROR")
+        return false;
+
+    if (response.find("\"error\"") != std::string::npos ||
+        response.find("access denied") != std::string::npos ||
+        response.find("Access Denied") != std::string::npos)
+        return false;
+
+    data->ProfileMeta.zero_gamma = StringToDouble(ExtractJsonValue(response, "zero_gamma"));
+    data->ProfileMeta.sum_gex_vol = StringToDouble(ExtractJsonValue(response, "sum_gex_vol"));
+    data->ProfileMeta.sum_gex_oi = StringToDouble(ExtractJsonValue(response, "sum_gex_oi"));
+    data->ProfileMeta.delta_risk_reversal = StringToDouble(ExtractJsonValue(response, "delta_risk_reversal"));
+
+    return true;
+}
+
+bool ParseGreeksResponse(const std::string& response, GammaData* data)
+{
+    if (response.empty() || response == "ERROR" || response == "HTTP_REQUEST_ERROR")
     {
         data->LastError = "Greeks HTTP request failed or empty response";
         return false;
     }
 
-    // Check for error in JSON response
     std::string errorMsg = ExtractJsonValue(response, "error");
     if (!errorMsg.empty())
     {
@@ -417,272 +281,246 @@ bool FetchGreeks(SCStudyInterfaceRef sc, GammaData* data, const std::string& tic
     data->Greeks.major_long_gamma = StringToDouble(ExtractJsonValue(response, "major_long_gamma"));
     data->Greeks.major_short_gamma = StringToDouble(ExtractJsonValue(response, "major_short_gamma"));
 
-    // Optimized: No longer parsing mini_contracts/strikes as they are unused
-
     return true;
 }
 
 // =========================
-//        SQLite WRITE
+//     CSV FILE I/O
 // =========================
 
-bool InitializeDatabase(SCStudyInterfaceRef sc, GammaData* data, const std::string& dbPath)
+// Create directory tree recursively (Windows API)
+void EnsureDirectoryExists(const std::string& filePath)
 {
-    if (dbPath.empty()) return false;
+    size_t lastSlash = filePath.find_last_of("\\/");
+    if (lastSlash == std::string::npos) return;
 
-    if (data->Database && data->DatabasePath == dbPath)
-        return true;
+    std::string dirPath = filePath.substr(0, lastSlash);
+    if (dirPath.empty()) return;
 
-    if (data->Database)
+    std::wstring wDirPath(dirPath.begin(), dirPath.end());
+    DWORD dwAttrib = GetFileAttributesW(wDirPath.c_str());
+    if (dwAttrib != INVALID_FILE_ATTRIBUTES) return; // Already exists
+
+    // Create directory tree
+    size_t pos = 0;
+    while ((pos = dirPath.find_first_of("\\/", pos + 1)) != std::string::npos)
     {
-        sqlite3_close(data->Database);
-        data->Database = nullptr;
+        std::string subDir = dirPath.substr(0, pos);
+        std::wstring wSubDir(subDir.begin(), subDir.end());
+        CreateDirectoryW(wSubDir.c_str(), NULL);
     }
-
-    // Create directory if it doesn't exist
-    size_t lastSlash = dbPath.find_last_of("\\/");
-    if (lastSlash != std::string::npos)
-    {
-        std::string dirPath = dbPath.substr(0, lastSlash);
-        if (!dirPath.empty())
-        {
-            // Create directory recursively
-            std::wstring wDirPath(dirPath.begin(), dirPath.end());
-            DWORD dwAttrib = GetFileAttributesW(wDirPath.c_str());
-            if (dwAttrib == INVALID_FILE_ATTRIBUTES)
-            {
-                // Try to create directory
-                size_t pos = 0;
-                while ((pos = dirPath.find_first_of("\\/", pos + 1)) != std::string::npos)
-                {
-                    std::string subDir = dirPath.substr(0, pos);
-                    std::wstring wSubDir(subDir.begin(), subDir.end());
-                    CreateDirectoryW(wSubDir.c_str(), NULL);
-                }
-                std::wstring wFullDir(dirPath.begin(), dirPath.end());
-                CreateDirectoryW(wFullDir.c_str(), NULL);
-            }
-        }
-    }
-
-    if (sqlite3_open(dbPath.c_str(), &data->Database) != SQLITE_OK)
-    {
-        if (data->Database)
-        {
-            data->LastError = "Failed to open database: " + std::string(sqlite3_errmsg(data->Database));
-            sqlite3_close(data->Database);
-            data->Database = nullptr;
-        }
-        else
-        {
-            data->LastError = "Failed to open database: out of memory";
-        }
-        return false;
-    }
-
-    data->DatabasePath = dbPath;
-
-    // Create table if not exists (structure exacte Quantower)
-    const char* createTableSQL =
-        "CREATE TABLE IF NOT EXISTS ticker_data ("
-        "timestamp REAL PRIMARY KEY,"
-        "spot REAL,"
-        "zero_gamma REAL,"
-        "major_pos_vol REAL,"
-        "major_neg_vol REAL,"
-        "major_pos_oi REAL,"
-        "major_neg_oi REAL,"
-        "sum_gex_vol REAL,"
-        "sum_gex_oi REAL,"
-        "delta_risk_reversal REAL,"
-        "major_long_gamma REAL,"
-        "major_short_gamma REAL,"
-        "major_positive REAL,"
-        "major_negative REAL,"
-        "net REAL"
-        ");";
-
-    char* errMsg = nullptr;
-    if (sqlite3_exec(data->Database, createTableSQL, nullptr, nullptr, &errMsg) != SQLITE_OK)
-    {
-        data->LastError = "Failed to create table: " + std::string(errMsg);
-        sqlite3_free(errMsg);
-        return false;
-    }
-
-    return true;
+    std::wstring wFullDir(dirPath.begin(), dirPath.end());
+    CreateDirectoryW(wFullDir.c_str(), NULL);
 }
 
-bool WriteToDatabase(SCStudyInterfaceRef sc, GammaData* data)
+// Helper to check if a file exists
+bool FileExists(const std::string& path)
 {
-    if (!data->Database) return false;
+    std::wstring wPath(path.begin(), path.end());
+    DWORD dwAttrib = GetFileAttributesW(wPath.c_str());
+    return (dwAttrib != INVALID_FILE_ATTRIBUTES && !(dwAttrib & FILE_ATTRIBUTE_DIRECTORY));
+}
 
-    // Convert SCDateTime to Unix timestamp
+// CSV header line
+static const char* CSV_HEADER = "timestamp,spot,zero_gamma,major_pos_vol,major_neg_vol,"
+    "major_pos_oi,major_neg_oi,sum_gex_vol,sum_gex_oi,delta_risk_reversal,"
+    "major_long_gamma,major_short_gamma,major_positive,major_negative,net\r\n";
+
+// Write a single data row to a CSV file (append mode)
+bool WriteToCsvFile(SCStudyInterfaceRef sc, GammaData* data, const std::string& csvPath)
+{
+    if (csvPath.empty()) return false;
+
+    EnsureDirectoryExists(csvPath);
+
+    // Check if file exists to decide whether to write header
+    bool needsHeader = !FileExists(csvPath);
+
+    // Open file for append
+    int fileHandle = 0;
+    SCString scPath(csvPath.c_str());
+    if (!sc.OpenFile(scPath, n_ACSIL::FILE_MODE_OPEN_TO_APPEND, fileHandle))
+    {
+        // File doesn't exist yet - create it
+        if (!sc.OpenFile(scPath, n_ACSIL::FILE_MODE_CREATE_AND_OPEN_FOR_READ_WRITE, fileHandle))
+        {
+            data->LastError = "Failed to open CSV file for writing";
+            return false;
+        }
+        needsHeader = true;
+    }
+
+    unsigned int bytesWritten = 0;
+
+    // Write header if new file
+    if (needsHeader)
+    {
+        int headerLen = (int)strlen(CSV_HEADER);
+        sc.WriteFile(fileHandle, CSV_HEADER, headerLen, &bytesWritten);
+    }
+
+    // Build data line
     double scDateTime = sc.CurrentSystemDateTime.GetAsDouble();
     double unixTimestamp = (scDateTime - 25569.0) * 86400.0;
 
-    // Get spot price from chart (use Close price as spot)
     double spot = 0.0;
     if (sc.BaseData[SC_CLOSE].GetArraySize() > 0 && sc.Index >= 0)
-    {
         spot = sc.BaseData[SC_CLOSE][sc.Index];
-    }
 
-    // Calculate net GEX
     double netGex = data->Majors.mpos_vol - fabs(data->Majors.mneg_vol);
     double zeroGamma = data->ProfileMeta.zero_gamma != 0 ? data->ProfileMeta.zero_gamma : data->Majors.zero_gamma;
-
-    // Structure exacte Quantower (même ordre que dans CREATE TABLE)
-    const char* insertSQL =
-        "INSERT OR REPLACE INTO ticker_data ("
-        "timestamp, spot, zero_gamma,"
-        "major_pos_vol, major_neg_vol,"
-        "major_pos_oi, major_neg_oi,"
-        "sum_gex_vol, sum_gex_oi,"
-        "delta_risk_reversal,"
-        "major_long_gamma, major_short_gamma,"
-        "major_positive, major_negative,"
-        "net"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
-
-    sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(data->Database, insertSQL, -1, &stmt, nullptr) != SQLITE_OK)
-        return false;
-
-    // Calculer les valeurs supplémentaires
-    double sumGexVol = data->ProfileMeta.sum_gex_vol;
-    double sumGexOi = data->ProfileMeta.sum_gex_oi;
-    double deltaRiskReversal = data->ProfileMeta.delta_risk_reversal;
     double net = spot + netGex / 100.0;
 
-    // Bind dans l'ordre exact de la table
-    sqlite3_bind_double(stmt, 1, unixTimestamp);  // timestamp
-    sqlite3_bind_double(stmt, 2, spot);           // spot
-    sqlite3_bind_double(stmt, 3, zeroGamma);      // zero_gamma
-    sqlite3_bind_double(stmt, 4, data->Majors.mpos_vol);  // major_pos_vol
-    sqlite3_bind_double(stmt, 5, data->Majors.mneg_vol);  // major_neg_vol
-    sqlite3_bind_double(stmt, 6, data->Majors.mpos_oi);    // major_pos_oi
-    sqlite3_bind_double(stmt, 7, data->Majors.mneg_oi);    // major_neg_oi
-    sqlite3_bind_double(stmt, 8, sumGexVol);       // sum_gex_vol
-    sqlite3_bind_double(stmt, 9, sumGexOi);        // sum_gex_oi
-    sqlite3_bind_double(stmt, 10, deltaRiskReversal); // delta_risk_reversal
-    sqlite3_bind_double(stmt, 11, data->Greeks.major_long_gamma);  // major_long_gamma
-    sqlite3_bind_double(stmt, 12, data->Greeks.major_short_gamma); // major_short_gamma
-    sqlite3_bind_double(stmt, 13, data->Greeks.major_positive);    // major_positive
-    sqlite3_bind_double(stmt, 14, data->Greeks.major_negative);   // major_negative
-    sqlite3_bind_double(stmt, 15, net);            // net
+    char line[1024];
+    int lineLen = snprintf(line, sizeof(line),
+        "%.1f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\r\n",
+        unixTimestamp,
+        spot,
+        zeroGamma,
+        data->Majors.mpos_vol,
+        data->Majors.mneg_vol,
+        data->Majors.mpos_oi,
+        data->Majors.mneg_oi,
+        data->ProfileMeta.sum_gex_vol,
+        data->ProfileMeta.sum_gex_oi,
+        data->ProfileMeta.delta_risk_reversal,
+        data->Greeks.major_long_gamma,
+        data->Greeks.major_short_gamma,
+        data->Greeks.major_positive,
+        data->Greeks.major_negative,
+        net);
 
-    bool success = (sqlite3_step(stmt) == SQLITE_DONE);
-    sqlite3_finalize(stmt);
+    sc.WriteFile(fileHandle, line, lineLen, &bytesWritten);
+    sc.CloseFile(fileHandle);
 
-    return success;
+    return true;
 }
 
-// Helper pour formater la date au format MM.dd.yyyy
-std::string FormatDateSuffix(const SCDateTime& dt)
+// Parse a single CSV line into an array of doubles
+// Returns number of fields parsed
+int ParseCsvLine(const std::string& line, double* values, int maxFields)
 {
-    SYSTEMTIME st = {};
-    double dtDouble = dt.GetAsDouble();
-    DATE date = static_cast<DATE>(dtDouble);
-    VariantTimeToSystemTime(date, &st);
-    
-    char buffer[20];
-    sprintf_s(buffer, sizeof(buffer), "%02d.%02d.%04d", st.wMonth, st.wDay, st.wYear);
-    return buffer;
+    int count = 0;
+    size_t start = 0;
+    size_t pos = 0;
+
+    while (pos <= line.length() && count < maxFields)
+    {
+        if (pos == line.length() || line[pos] == ',')
+        {
+            std::string field = line.substr(start, pos - start);
+            // Trim whitespace
+            while (!field.empty() && (field.front() == ' ' || field.front() == '\t'))
+                field.erase(0, 1);
+            while (!field.empty() && (field.back() == ' ' || field.back() == '\t' || field.back() == '\r' || field.back() == '\n'))
+                field.pop_back();
+
+            values[count] = StringToDouble(field);
+            count++;
+            start = pos + 1;
+        }
+        pos++;
+    }
+
+    return count;
 }
 
-// Helper pour soustraire des jours
-SCDateTime SubtractDays(SCDateTime base, int days)
-{
-    double adjusted = base.GetAsDouble() - days;
-    return SCDateTime(adjusted);
-}
-
-// Forward fill: trouve la valeur la plus récente <= targetTime avec tolérance de 60 secondes
-float GetValueAtTime(const std::map<SCDateTime, float>& map, SCDateTime targetTime)
-{
-    if (map.empty()) return -FLT_MAX;
-
-    auto it = map.upper_bound(targetTime);
-    if (it == map.begin()) return -FLT_MAX;
-
-    --it;
-    
-    // Vérifier que la différence de temps n'est pas trop grande
-    // Tolérance de 5 minutes pour gérer les décalages de fuseau horaire et les données non alignées
-    double delta = fabs((targetTime - it->first).GetAsDouble() * 86400.0);
-    if (delta <= 300.0) // 5 minutes de tolérance
-        return it->second;
-    
-    return -FLT_MAX;
-}
-
-// Charge toutes les données historiques depuis la DB (compatible Quantower)
-int LoadSingleDB(SCStudyInterfaceRef sc, const std::string& fullPath, int tzOffsetHours, GammaData* data)
+// Load historical data from a single CSV file
+int LoadSingleCSV(SCStudyInterfaceRef sc, const std::string& fullPath, int tzOffsetHours, GammaData* data)
 {
     int rowCount = 0;
-    sqlite3* db = nullptr;
 
-    if (sqlite3_open(fullPath.c_str(), &db) != SQLITE_OK)
+    int fileHandle = 0;
+    SCString scPath(fullPath.c_str());
+    if (!sc.OpenFile(scPath, n_ACSIL::FILE_MODE_OPEN_EXISTING_FOR_SEQUENTIAL_READING, fileHandle))
     {
         SCString msg;
-        msg.Format("GEX_TERMINAL: Impossible d'ouvrir %s", fullPath.c_str());
+        msg.Format("GEX_TERMINAL: Cannot open %s", fullPath.c_str());
         sc.AddMessageToLog(msg, 0);
         return 0;
     }
 
-    // Structure Quantower réelle (selon le schéma fourni par l'utilisateur)
-    // Colonnes: timestamp, spot, zero_gamma, major_pos_vol, major_neg_vol, major_pos_oi, major_neg_oi,
-    //           major_long_gamma, major_short_gamma, major_positive, major_negative, net, etc.
-    const char* query = 
-        "SELECT timestamp, "
-        "COALESCE(spot, 0) AS spot, "
-        "COALESCE(zero_gamma, 0) AS zero_val, "
-        "COALESCE(major_pos_vol, 0) AS posvol_val, "
-        "COALESCE(major_neg_vol, 0) AS negvol_val, "
-        "COALESCE(major_pos_oi, 0) AS posoi_val, "
-        "COALESCE(major_neg_oi, 0) AS negoi_val, "
-        "COALESCE(major_long_gamma, 0) AS long_val, "
-        "COALESCE(major_short_gamma, 0) AS short_val, "
-        "COALESCE(major_positive, 0) AS majpos_val, "
-        "COALESCE(major_negative, 0) AS majneg_val "
-        "FROM ticker_data;";
+    // Read entire file into a buffer
+    // CSV files for daily data are small (< 100KB typically)
+    const int BUFFER_SIZE = 256 * 1024; // 256KB max
+    char* buffer = new char[BUFFER_SIZE];
+    unsigned int bytesRead = 0;
+    int totalRead = 0;
 
-    sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db, query, -1, &stmt, nullptr) != SQLITE_OK)
+    while (sc.ReadFile(fileHandle, buffer + totalRead, BUFFER_SIZE - totalRead - 1, &bytesRead) && bytesRead > 0)
     {
-        const char* errMsg = sqlite3_errmsg(db);
-        SCString msg;
-        msg.Format("GEX_TERMINAL: Erreur SQL pour %s: %s", fullPath.c_str(), errMsg ? errMsg : "unknown");
-        sc.AddMessageToLog(msg, 0);
-        sqlite3_close(db);
+        totalRead += bytesRead;
+        if (totalRead >= BUFFER_SIZE - 1) break;
+        bytesRead = 0;
+    }
+    buffer[totalRead] = '\0';
+    sc.CloseFile(fileHandle);
+
+    if (totalRead == 0)
+    {
+        delete[] buffer;
         return 0;
     }
 
-    while (sqlite3_step(stmt) == SQLITE_ROW)
+    // Parse line by line
+    std::string content(buffer, totalRead);
+    delete[] buffer;
+
+    size_t lineStart = 0;
+    bool isFirstLine = true;
+
+    while (lineStart < content.length())
     {
-        double ts = sqlite3_column_double(stmt, 0);
+        size_t lineEnd = content.find('\n', lineStart);
+        if (lineEnd == std::string::npos)
+            lineEnd = content.length();
+
+        std::string line = content.substr(lineStart, lineEnd - lineStart);
+        lineStart = lineEnd + 1;
+
+        // Trim trailing \r
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+            line.pop_back();
+
+        if (line.empty()) continue;
+
+        // Skip header line
+        if (isFirstLine)
+        {
+            isFirstLine = false;
+            // Check if this is actually a header (starts with "timestamp" or non-numeric)
+            if (line.find("timestamp") != std::string::npos || (!line.empty() && !isdigit(line[0]) && line[0] != '-'))
+                continue;
+        }
+
+        // Parse CSV fields:
+        // 0:timestamp, 1:spot, 2:zero_gamma, 3:major_pos_vol, 4:major_neg_vol,
+        // 5:major_pos_oi, 6:major_neg_oi, 7:sum_gex_vol, 8:sum_gex_oi,
+        // 9:delta_risk_reversal, 10:major_long_gamma, 11:major_short_gamma,
+        // 12:major_positive, 13:major_negative, 14:net
+        double values[15] = {0};
+        int fieldCount = ParseCsvLine(line, values, 15);
+        if (fieldCount < 5) continue; // Need at least timestamp + a few fields
+
+        double ts = values[0];
         if (ts <= 0) continue;
 
-        // Convertir timestamp Unix en SCDateTime avec offset de fuseau horaire
-        // Ajouter l'offset AVANT la conversion (comme dans le code de référence)
+        // Convert Unix timestamp to SCDateTime with timezone offset
         SCDateTime dt((ts + tzOffsetHours * 3600.0) / 86400.0 + 25569.0);
 
-        // Ordre des colonnes dans la requête:
-        // 0: timestamp, 1: spot, 2: long_val, 3: short_val, 4: majpos_val, 5: majneg_val,
-        // 6: zero_val, 7: posvol_val, 8: negvol_val, 9: posoi_val, 10: negoi_val
-        double spot = sqlite3_column_double(stmt, 1);
-        double lng = sqlite3_column_double(stmt, 2);
-        double sht = sqlite3_column_double(stmt, 3);
-        double mjp = sqlite3_column_double(stmt, 4);
-        double mjn = sqlite3_column_double(stmt, 5);
-        double zero = sqlite3_column_double(stmt, 6);
-        double posv = sqlite3_column_double(stmt, 7);
-        double negv = sqlite3_column_double(stmt, 8);
-        double posoi = sqlite3_column_double(stmt, 9);
-        double negoi = sqlite3_column_double(stmt, 10);
+        double spot  = values[1];
+        double zero  = values[2];
+        double posv  = values[3];
+        double negv  = values[4];
+        double posoi = (fieldCount > 5) ? values[5] : 0;
+        double negoi = (fieldCount > 6) ? values[6] : 0;
+        // 7:sum_gex_vol, 8:sum_gex_oi, 9:delta_risk_reversal (skipped for maps)
+        double lng   = (fieldCount > 10) ? values[10] : 0;
+        double sht   = (fieldCount > 11) ? values[11] : 0;
+        double mjp   = (fieldCount > 12) ? values[12] : 0;
+        double mjn   = (fieldCount > 13) ? values[13] : 0;
 
-        // Stocker dans les maps avec SCDateTime directement
+        // Store in maps (map overwrites duplicates naturally)
         if (!std::isnan(spot) && spot != 0) data->spotMap[dt] = static_cast<float>(spot);
         if (!std::isnan(zero) && zero != 0) data->zeroMap[dt] = static_cast<float>(zero);
         if (!std::isnan(posv) && posv != 0) data->posVolMap[dt] = static_cast<float>(posv);
@@ -694,7 +532,7 @@ int LoadSingleDB(SCStudyInterfaceRef sc, const std::string& fullPath, int tzOffs
         if (!std::isnan(mjp) && mjp != 0) data->majPosMap[dt] = static_cast<float>(mjp);
         if (!std::isnan(mjn) && mjn != 0) data->majNegMap[dt] = static_cast<float>(mjn);
 
-        // Calculer net (spot + netGex / 100.0)
+        // Calculate net (spot + netGex / 100.0)
         if (!std::isnan(spot) && !std::isnan(posv) && !std::isnan(negv))
         {
             double netGex = posv - fabs(negv);
@@ -704,38 +542,65 @@ int LoadSingleDB(SCStudyInterfaceRef sc, const std::string& fullPath, int tzOffs
         ++rowCount;
     }
 
-    sqlite3_finalize(stmt);
-    sqlite3_close(db);
-
     if (rowCount > 0)
     {
         SCString msg;
-        msg.Format("GEX_TERMINAL: Chargé %d lignes depuis %s", rowCount, fullPath.c_str());
+        msg.Format("GEX_TERMINAL: Loaded %d rows from %s", rowCount, fullPath.c_str());
         sc.AddMessageToLog(msg, 0);
     }
 
     return rowCount;
 }
 
-// Helper pour vérifier si un fichier existe
-bool FileExists(const std::string& path)
+// =========================
+//     DATE/TIME HELPERS
+// =========================
+
+// Helper to format date as MM.dd.yyyy
+std::string FormatDateSuffix(const SCDateTime& dt)
 {
-    FILE* file = fopen(path.c_str(), "rb");
-    if (file)
-    {
-        fclose(file);
-        return true;
-    }
-    return false;
+    int year = dt.GetYear();
+    int month = dt.GetMonth();
+    int day = dt.GetDay();
+    
+    char buffer[20];
+    snprintf(buffer, sizeof(buffer), "%02d.%02d.%04d", month, day, year);
+    return buffer;
 }
 
-// Charge les fichiers DB récents (comme le code de référence)
+SCDateTime SubtractDays(SCDateTime base, int days)
+{
+    double adjusted = base.GetAsDouble() - days;
+    return SCDateTime(adjusted);
+}
+
+// Forward fill: find the most recent value <= targetTime with 5 minute tolerance
+float GetValueAtTime(const std::map<SCDateTime, float>& map, SCDateTime targetTime)
+{
+    if (map.empty()) return -FLT_MAX;
+
+    auto it = map.upper_bound(targetTime);
+    if (it == map.begin()) return -FLT_MAX;
+
+    --it;
+    
+    double delta = fabs((targetTime - it->first).GetAsDouble() * 86400.0);
+    if (delta <= 300.0)
+        return it->second;
+    
+    return -FLT_MAX;
+}
+
+// =========================
+//  HISTORICAL DATA LOADING
+// =========================
+
 void LoadRecentGammaFiles(SCStudyInterfaceRef sc, GammaData* data, const std::string& baseFolder, const std::string& ticker, int days, int tzOffset, int refreshSeconds)
 {
-    // Nettoyer si les paramètres ont changé
-    if (baseFolder != data->LastBasePath || ticker != data->LastTickerForDB || days != data->LastDaysCount || tzOffset != data->LastTZOffset)
+    // Clear if parameters changed
+    if (baseFolder != data->LastBasePath || ticker != data->LastTickerForFile || days != data->LastDaysCount || tzOffset != data->LastTZOffset)
     {
-        data->CachedDBPaths.clear();
+        data->CachedFilePaths.clear();
         data->zeroMap.clear();
         data->posVolMap.clear();
         data->negVolMap.clear();
@@ -749,12 +614,11 @@ void LoadRecentGammaFiles(SCStudyInterfaceRef sc, GammaData* data, const std::st
         data->spotMap.clear();
 
         data->LastBasePath = baseFolder;
-        data->LastTickerForDB = ticker;
+        data->LastTickerForFile = ticker;
         data->LastDaysCount = days;
         data->LastTZOffset = tzOffset;
     }
 
-    // Utiliser la date actuelle comme référence (pas la dernière barre du graphique)
     SCDateTime reference = sc.GetCurrentDateTime();
 
     int totalRowsLoaded = 0;
@@ -762,148 +626,96 @@ void LoadRecentGammaFiles(SCStudyInterfaceRef sc, GammaData* data, const std::st
     {
         SCDateTime date = SubtractDays(reference, i);
         std::string suffix = FormatDateSuffix(date);
-        std::string path = baseFolder + "\\Tickers " + suffix + "\\" + ticker + ".db";
+        std::string path = baseFolder + "\\Tickers " + suffix + "\\" + ticker + ".csv";
 
         bool isToday = (i == 0);
-        bool isAlreadyLoaded = data->CachedDBPaths.count(path) > 0;
+        bool isAlreadyLoaded = data->CachedFilePaths.count(path) > 0;
         bool refreshDue = (sc.CurrentSystemDateTime - data->LastRefreshTime).GetAsDouble() > (refreshSeconds / 86400.0);
 
         if (FileExists(path))
         {
             if (isToday && refreshDue)
             {
-                int rows = LoadSingleDB(sc, path, tzOffset, data);
+                int rows = LoadSingleCSV(sc, path, tzOffset, data);
                 data->LastRefreshTime = sc.CurrentSystemDateTime;
                 totalRowsLoaded += rows;
             }
             else if (!isToday && !isAlreadyLoaded)
             {
-                int rows = LoadSingleDB(sc, path, tzOffset, data);
+                int rows = LoadSingleCSV(sc, path, tzOffset, data);
                 if (rows > 0)
                 {
-                    data->CachedDBPaths.insert(path);
+                    data->CachedFilePaths.insert(path);
                     totalRowsLoaded += rows;
                 }
             }
         }
         else
         {
-            // Log pour debug - fichier non trouvé (seulement pour les premiers jours)
-            if (i < 3) // Log pour les 3 premiers jours seulement
+            if (i < 3)
             {
                 SCString msg;
-                msg.Format("GEX_TERMINAL: Fichier non trouvé: %s", path.c_str());
+                msg.Format("GEX_TERMINAL: File not found: %s", path.c_str());
                 sc.AddMessageToLog(msg, 0);
             }
         }
     }
     
-    // Log récapitulatif
     if (totalRowsLoaded > 0)
     {
         SCString msg;
-        msg.Format("GEX_TERMINAL: Total chargé: %d lignes, Zero points: %d", totalRowsLoaded, data->zeroMap.size());
+        msg.Format("GEX_TERMINAL: Total loaded: %d rows, Zero points: %d", totalRowsLoaded, (int)data->zeroMap.size());
         sc.AddMessageToLog(msg, 0);
     }
 }
 
 // =========================
-//        MAIN FUNCTION
+//   UPDATE MAPS + WRITE
 // =========================
 
-void FetchAllData(SCStudyInterfaceRef sc, GammaData* data)
+void UpdateMapsAndWriteCSV(SCStudyInterfaceRef sc, GammaData* data,
+    const std::string& ticker, const std::string& writePath)
 {
-    if (data->IsProcessing) return;
-    data->IsProcessing = true;
+    SCDateTime scDateTime = sc.CurrentSystemDateTime;
 
-    std::string apiKey = sc.Input[0].GetString();
-    std::string ticker = sc.Input[1].GetString();
-    int refreshInterval = sc.Input[2].GetInt();
+    float zeroGamma = (data->ProfileMeta.zero_gamma != 0)
+        ? static_cast<float>(data->ProfileMeta.zero_gamma)
+        : static_cast<float>(data->Majors.zero_gamma);
     
-    // Comme Quantower: toujours utiliser "zero" comme aggregation
-    std::string aggregation = "zero";
-
-    if (apiKey.empty() || apiKey == "YOUR_API_KEY")
-    {
-        data->LastError = "API key manquante";
-        data->IsProcessing = false;
-        return;
-    }
-
-    // Check if refresh needed
-    bool needsRefresh = false;
-    if (apiKey != data->LastApiKey || ticker != data->LastTicker || refreshInterval != data->LastRefreshInterval)
-    {
-        needsRefresh = true;
-    }
-    else
-    {
-        double timeSinceUpdate = (sc.CurrentSystemDateTime - data->LastUpdate).GetAsDouble() * 86400.0;
-        if (timeSinceUpdate >= refreshInterval)
-            needsRefresh = true;
-    }
-
-    if (!needsRefresh)
-    {
-        data->IsProcessing = false;
-        return;
-    }
-
-    // Comme dans Quantower: appeler TOUS les endpoints automatiquement (classic ET state)
-    // Aggregation toujours "zero"
+    if (zeroGamma != 0) data->zeroMap[scDateTime] = zeroGamma;
+    if (data->Majors.mpos_vol != 0) data->posVolMap[scDateTime] = static_cast<float>(data->Majors.mpos_vol);
+    if (data->Majors.mneg_vol != 0) data->negVolMap[scDateTime] = static_cast<float>(data->Majors.mneg_vol);
+    if (data->Majors.mpos_oi != 0) data->posOiMap[scDateTime] = static_cast<float>(data->Majors.mpos_oi);
+    if (data->Majors.mneg_oi != 0) data->negOiMap[scDateTime] = static_cast<float>(data->Majors.mneg_oi);
+    if (data->Greeks.major_long_gamma != 0) data->longMap[scDateTime] = static_cast<float>(data->Greeks.major_long_gamma);
+    if (data->Greeks.major_short_gamma != 0) data->shortMap[scDateTime] = static_cast<float>(data->Greeks.major_short_gamma);
+    if (data->Greeks.major_positive != 0) data->majPosMap[scDateTime] = static_cast<float>(data->Greeks.major_positive);
+    if (data->Greeks.major_negative != 0) data->majNegMap[scDateTime] = static_cast<float>(data->Greeks.major_negative);
     
-    // Classic d'abord (toujours disponible dans l'abonnement classic) - Volume ET OI
-    FetchMajors(sc, data, ticker, "classic", aggregation, apiKey);
-
-    // OPTIMIZED: Remove redundant duplicate call, and remove useOi parameter
-    FetchProfile(sc, data, ticker, "classic", aggregation, apiKey);
-    
-    // Ensuite tester State (si disponible dans la clé API)
-    std::string stateUrl = "https://api.gexbot.com/" + UrlEncode(ticker) + "/state/" +
-        UrlEncode(aggregation) + "?key=" + UrlEncode(apiKey);
-    std::string stateResponse = HttpGet(stateUrl, 30);
-    
-    // Vérifier si state est disponible (pas d'erreur dans la réponse)
-    bool stateAvailable = (!stateResponse.empty() && 
-                           stateResponse.find("\"error\"") == std::string::npos &&
-                           stateResponse.find("access denied") == std::string::npos &&
-                           stateResponse.find("Access Denied") == std::string::npos);
-    
-    if (stateAvailable)
+    // Calculate net
+    if (sc.BaseData[SC_CLOSE].GetArraySize() > 0 && sc.Index >= 0)
     {
-        // State est disponible, récupérer les données state
-        FetchGreeks(sc, data, ticker, "GEX", aggregation, apiKey);
-        
-        // OPTIMIZED: Reuse stateResponse instead of fetching the same URL again
-        data->ProfileMeta.zero_gamma = StringToDouble(ExtractJsonValue(stateResponse, "zero_gamma"));
-        data->ProfileMeta.sum_gex_vol = StringToDouble(ExtractJsonValue(stateResponse, "sum_gex_vol"));
-        data->ProfileMeta.sum_gex_oi = StringToDouble(ExtractJsonValue(stateResponse, "sum_gex_oi"));
-        data->ProfileMeta.delta_risk_reversal = StringToDouble(ExtractJsonValue(stateResponse, "delta_risk_reversal"));
-    }
-    // Si state n'est pas disponible (accès refusé), on utilise seulement classic (déjà chargé)
-
-    // Write to database if enabled
-    std::string dbPath = sc.Input[5].GetString(); // DatabaseWritePathInput est maintenant à l'index 5
-    if (!dbPath.empty())
-    {
-        if (InitializeDatabase(sc, data, dbPath))
+        float spot = static_cast<float>(sc.BaseData[SC_CLOSE][sc.Index]);
+        if (spot != 0 && data->Majors.mpos_vol != 0 && data->Majors.mneg_vol != 0)
         {
-            if (!WriteToDatabase(sc, data))
-            {
-                // Log error but don't fail the entire operation
-                data->LastError = "Database write failed (check log)";
-            }
+            float netGex = static_cast<float>(data->Majors.mpos_vol - fabs(data->Majors.mneg_vol));
+            data->netMap[scDateTime] = spot + netGex / 100.0f;
         }
     }
-
-    // Update cache
-    data->LastApiKey = apiKey;
-    data->LastTicker = ticker;
-    data->LastRefreshInterval = refreshInterval;
-    data->LastUpdate = sc.CurrentSystemDateTime;
-    data->LastError = "OK";
-
-    data->IsProcessing = false;
+    
+    // Write to CSV file
+    if (!writePath.empty() && !ticker.empty())
+    {
+        SCDateTime today = sc.GetCurrentDateTime();
+        int year = today.GetYear();
+        int month = today.GetMonth();
+        int day = today.GetDay();
+        char dateStr[32];
+        snprintf(dateStr, sizeof(dateStr), "%02d.%02d.%04d", month, day, year);
+        std::string todayCsvPath = writePath + "\\Tickers " + dateStr + "\\" + ticker + ".csv";
+        
+        WriteToCsvFile(sc, data, todayCsvPath);
+    }
 }
 
 // =========================
@@ -928,10 +740,10 @@ SCSFExport scsf_GexBotAPI(SCStudyInterfaceRef sc)
 
     SCInputRef ApiKeyInput = sc.Input[0];
     SCInputRef TickerInput = sc.Input[1];
-    SCInputRef MultiplierInput = sc.Input[2]; // Multiplicateur pour ajuster les niveaux
+    SCInputRef MultiplierInput = sc.Input[2];
     SCInputRef RefreshIntervalInput = sc.Input[3];
-    SCInputRef DatabaseReadPathInput = sc.Input[4];
-    SCInputRef DatabaseWritePathInput = sc.Input[5];
+    SCInputRef CsvReadPathInput = sc.Input[4];
+    SCInputRef CsvWritePathInput = sc.Input[5];
     SCInputRef DaysToLoadInput = sc.Input[6];
     SCInputRef TZOffsetInput = sc.Input[7];
     SCInputRef ShowMajorPosVolInput = sc.Input[8];
@@ -950,6 +762,8 @@ SCSFExport scsf_GexBotAPI(SCStudyInterfaceRef sc)
         sc.AutoLoop = 1;
         sc.GraphRegion = 0;
         sc.ValueFormat = 2;
+        // sc.MakeHTTPRequest automatically triggers a study callback when the response arrives.
+        // No need for UpdateAlways - normal bar/tick updates handle refresh timing.
 
         // Subgraphs
         LongGamma.Name = "Long Gamma"; LongGamma.DrawStyle = DRAWSTYLE_DASH; LongGamma.PrimaryColor = RGB(0, 255, 255); LongGamma.LineWidth = 2;
@@ -970,11 +784,11 @@ SCSFExport scsf_GexBotAPI(SCStudyInterfaceRef sc)
         ApiKeyInput.Name = "API Key"; ApiKeyInput.SetString("YOUR_API_KEY");
         TickerInput.Name = "Ticker"; TickerInput.SetString("ES_SPX");
         MultiplierInput.Name = "Multiplier"; MultiplierInput.SetFloat(1.0);
-        MultiplierInput.SetFloatLimits(0.001, 1000.0);
+        MultiplierInput.SetFloatLimits(0.001f, 1000.0f);
         RefreshIntervalInput.Name = "Refresh (seconds)"; RefreshIntervalInput.SetInt(10);
         RefreshIntervalInput.SetIntLimits(1, 3600);
-        DatabaseReadPathInput.Name = "DB Read Path (e.g. C:\\Quantower\\GexBot)"; DatabaseReadPathInput.SetString("");
-        DatabaseWritePathInput.Name = "DB Write Path (e.g. C:\\SierraChart\\GexBot)"; DatabaseWritePathInput.SetString("");
+        CsvReadPathInput.Name = "CSV Read Path (e.g. C:\\GexBot\\Data)"; CsvReadPathInput.SetString("");
+        CsvWritePathInput.Name = "CSV Write Path (e.g. C:\\GexBot\\Data)"; CsvWritePathInput.SetString("");
         DaysToLoadInput.Name = "Days to Load"; DaysToLoadInput.SetInt(15);
         DaysToLoadInput.SetIntLimits(1, 30);
         TZOffsetInput.Name = "UTC Offset (hours)"; TZOffsetInput.SetInt(0);
@@ -998,11 +812,6 @@ SCSFExport scsf_GexBotAPI(SCStudyInterfaceRef sc)
         GammaData* data = static_cast<GammaData*>(sc.GetPersistentPointer(1));
         if (data)
         {
-            if (data->Database)
-            {
-                sqlite3_close(data->Database);
-                data->Database = nullptr;
-            }
             delete data;
             sc.SetPersistentPointer(1, nullptr);
         }
@@ -1016,90 +825,190 @@ SCSFExport scsf_GexBotAPI(SCStudyInterfaceRef sc)
         sc.SetPersistentPointer(1, data);
     }
 
-    // Récupérer les paramètres (déclarer au début pour être accessible partout)
-    std::string ticker = TickerInput.GetString();
+    // Get parameters (lightweight - just reading input refs)
     float multiplier = MultiplierInput.GetFloat();
-    
-    // Charger les données historiques UNE SEULE FOIS au démarrage ou si les paramètres changent
-    std::string readDbPath = DatabaseReadPathInput.GetString();
-    int daysToLoad = DaysToLoadInput.GetInt();
-    int tzOffset = TZOffsetInput.GetInt();
-    int refreshInterval = RefreshIntervalInput.GetInt();
-    
-    // Vérifier si les paramètres ont changé ou si c'est la première fois
-    bool paramsChanged = (readDbPath != data->LastBasePath || 
-                         ticker != data->LastTickerForDB || 
-                         daysToLoad != data->LastDaysCount || 
-                         tzOffset != data->LastTZOffset);
-    
-    if (!readDbPath.empty() && !ticker.empty() && (paramsChanged || !data->HistoricalDataLoaded))
-    {
-        // Charger les données historiques (une seule fois ou si paramètres changent)
-        LoadRecentGammaFiles(sc, data, readDbPath, ticker, daysToLoad, tzOffset, refreshInterval);
-        data->HistoricalDataLoaded = true; // Marquer comme chargé
-    }
+    bool isLastBar = (sc.Index == sc.ArraySize - 1);
 
-    // Pour la barre actuelle (live), récupérer depuis l'API et mettre à jour les maps
-    bool isHistoricalBar = (sc.Index < sc.ArraySize - 1);
-    if (!isHistoricalBar)
+    // ========================================
+    //   LAST BAR ONLY: CSV loading + async HTTP
+    // ========================================
+    if (isLastBar)
     {
-        // Fetch depuis l'API
-        FetchAllData(sc, data);
+        std::string ticker = TickerInput.GetString();
+        int refreshInterval = RefreshIntervalInput.GetInt();
+        std::string apiKey = ApiKeyInput.GetString();
+        std::string writePath = CsvWritePathInput.GetString();
+
+        // Load historical data once at startup or if parameters change
+        std::string readPath = CsvReadPathInput.GetString();
+        int daysToLoad = DaysToLoadInput.GetInt();
+        int tzOffset = TZOffsetInput.GetInt();
         
-        // Mettre à jour les maps avec les nouvelles données (utiliser SCDateTime)
-        SCDateTime scDateTime = sc.CurrentSystemDateTime;
-        float zeroGamma = (data->ProfileMeta.zero_gamma != 0) ? static_cast<float>(data->ProfileMeta.zero_gamma) : static_cast<float>(data->Majors.zero_gamma);
+        bool paramsChanged = (readPath != data->LastBasePath || 
+                             ticker != data->LastTickerForFile || 
+                             daysToLoad != data->LastDaysCount || 
+                             tzOffset != data->LastTZOffset);
         
-        if (zeroGamma != 0) data->zeroMap[scDateTime] = zeroGamma;
-        if (data->Majors.mpos_vol != 0) data->posVolMap[scDateTime] = static_cast<float>(data->Majors.mpos_vol);
-        if (data->Majors.mneg_vol != 0) data->negVolMap[scDateTime] = static_cast<float>(data->Majors.mneg_vol);
-        if (data->Majors.mpos_oi != 0) data->posOiMap[scDateTime] = static_cast<float>(data->Majors.mpos_oi);
-        if (data->Majors.mneg_oi != 0) data->negOiMap[scDateTime] = static_cast<float>(data->Majors.mneg_oi);
-        if (data->Greeks.major_long_gamma != 0) data->longMap[scDateTime] = static_cast<float>(data->Greeks.major_long_gamma);
-        if (data->Greeks.major_short_gamma != 0) data->shortMap[scDateTime] = static_cast<float>(data->Greeks.major_short_gamma);
-        if (data->Greeks.major_positive != 0) data->majPosMap[scDateTime] = static_cast<float>(data->Greeks.major_positive);
-        if (data->Greeks.major_negative != 0) data->majNegMap[scDateTime] = static_cast<float>(data->Greeks.major_negative);
-        
-        // Calculer net
-        if (sc.BaseData[SC_CLOSE].GetArraySize() > 0 && sc.Index >= 0)
+        if (!readPath.empty() && !ticker.empty() && (paramsChanged || !data->HistoricalDataLoaded))
         {
-            float spot = static_cast<float>(sc.BaseData[SC_CLOSE][sc.Index]);
-            if (spot != 0 && data->Majors.mpos_vol != 0 && data->Majors.mneg_vol != 0)
+            LoadRecentGammaFiles(sc, data, readPath, ticker, daysToLoad, tzOffset, refreshInterval);
+            data->HistoricalDataLoaded = true;
+        }
+
+        // ------ STATE: IDLE ------
+        if (data->CurrentFetchState == FETCH_IDLE)
+        {
+            bool needsRefresh = false;
+
+            if (apiKey.empty() || apiKey == "YOUR_API_KEY")
             {
-                float netGex = static_cast<float>(data->Majors.mpos_vol - fabs(data->Majors.mneg_vol));
-                data->netMap[scDateTime] = spot + netGex / 100.0f;
+                // No valid API key, skip
+            }
+            else if (apiKey != data->LastApiKey || ticker != data->LastTicker || refreshInterval != data->LastRefreshInterval)
+            {
+                needsRefresh = true;
+            }
+            else
+            {
+                double timeSinceUpdate = (sc.CurrentSystemDateTime - data->LastUpdate).GetAsDouble() * 86400.0;
+                if (timeSinceUpdate >= refreshInterval)
+                    needsRefresh = true;
+            }
+
+            if (needsRefresh)
+            {
+                SCString url;
+                url.Format("https://api.gexbot.com/%s/classic/zero/majors?key=%s",
+                    UrlEncode(ticker).c_str(), UrlEncode(apiKey).c_str());
+                
+                if (sc.MakeHTTPRequest(url))
+                {
+                    data->CurrentFetchState = FETCH_MAJORS_SENT;
+                    data->FetchCycleDataDirty = false;
+                }
+                else
+                {
+                    data->LastError = "Failed to send majors request";
+                }
             }
         }
-        
-        // Écrire dans la DB (chemin d'écriture séparé)
-        std::string writeDbPath = DatabaseWritePathInput.GetString();
-        if (!writeDbPath.empty() && !ticker.empty())
+
+        // ------ STATE: MAJORS_SENT ------
+        else if (data->CurrentFetchState == FETCH_MAJORS_SENT && sc.HTTPResponse != "")
         {
-            // Construire le chemin de la DB pour aujourd'hui
-            SCDateTime today = sc.GetCurrentDateTime();
-            int year = today.GetYear();
-            int month = today.GetMonth();
-            int day = today.GetDay();
-            char dateStr[32];
-            sprintf_s(dateStr, sizeof(dateStr), "%02d.%02d.%04d", month, day, year);
-            std::string todayDbPath = writeDbPath + "\\Tickers " + dateStr + "\\" + ticker + ".db";
+            std::string response = sc.HTTPResponse.GetChars();
+            if (ParseMajorsResponse(response, data))
+                data->FetchCycleDataDirty = true;
+
+            SCString url;
+            url.Format("https://api.gexbot.com/%s/classic/zero?key=%s",
+                UrlEncode(ticker).c_str(), UrlEncode(apiKey).c_str());
             
-            if (InitializeDatabase(sc, data, todayDbPath))
+            if (sc.MakeHTTPRequest(url))
+                data->CurrentFetchState = FETCH_PROFILE_SENT;
+            else
             {
-                WriteToDatabase(sc, data);
+                data->LastError = "Failed to send profile request";
+                data->CurrentFetchState = FETCH_ERROR;
             }
+        }
+
+        // ------ STATE: PROFILE_SENT ------
+        else if (data->CurrentFetchState == FETCH_PROFILE_SENT && sc.HTTPResponse != "")
+        {
+            std::string response = sc.HTTPResponse.GetChars();
+            if (ParseProfileResponse(response, data))
+                data->FetchCycleDataDirty = true;
+
+            SCString url;
+            url.Format("https://api.gexbot.com/%s/state/zero?key=%s",
+                UrlEncode(ticker).c_str(), UrlEncode(apiKey).c_str());
+            
+            if (sc.MakeHTTPRequest(url))
+                data->CurrentFetchState = FETCH_STATE_CHECK_SENT;
+            else
+            {
+                data->LastError = "Failed to send state check request";
+                data->CurrentFetchState = FETCH_ERROR;
+            }
+        }
+
+        // ------ STATE: STATE_CHECK_SENT ------
+        else if (data->CurrentFetchState == FETCH_STATE_CHECK_SENT && sc.HTTPResponse != "")
+        {
+            std::string response = sc.HTTPResponse.GetChars();
+            data->StateEndpointAvailable = ParseStateCheckResponse(response, data);
+            
+            if (data->StateEndpointAvailable)
+            {
+                data->FetchCycleDataDirty = true;
+
+                SCString url;
+                url.Format("https://api.gexbot.com/%s/state/GEX_zero?key=%s",
+                    UrlEncode(ticker).c_str(), UrlEncode(apiKey).c_str());
+                
+                if (sc.MakeHTTPRequest(url))
+                    data->CurrentFetchState = FETCH_GREEKS_SENT;
+                else
+                {
+                    data->LastError = "Failed to send greeks request";
+                    data->CurrentFetchState = FETCH_ERROR;
+                }
+            }
+            else
+            {
+                // State not available - finish with classic only
+                data->LastApiKey = apiKey;
+                data->LastTicker = ticker;
+                data->LastRefreshInterval = refreshInterval;
+                data->LastUpdate = sc.CurrentSystemDateTime;
+                data->LastError = "OK (classic only)";
+                data->CurrentFetchState = FETCH_IDLE;
+
+                if (data->FetchCycleDataDirty)
+                    UpdateMapsAndWriteCSV(sc, data, ticker, writePath);
+            }
+        }
+
+        // ------ STATE: GREEKS_SENT ------
+        else if (data->CurrentFetchState == FETCH_GREEKS_SENT && sc.HTTPResponse != "")
+        {
+            std::string response = sc.HTTPResponse.GetChars();
+            if (ParseGreeksResponse(response, data))
+                data->FetchCycleDataDirty = true;
+
+            data->LastApiKey = apiKey;
+            data->LastTicker = ticker;
+            data->LastRefreshInterval = refreshInterval;
+            data->LastUpdate = sc.CurrentSystemDateTime;
+            data->LastError = "OK";
+            data->CurrentFetchState = FETCH_IDLE;
+
+            if (data->FetchCycleDataDirty)
+                UpdateMapsAndWriteCSV(sc, data, ticker, writePath);
+        }
+
+        // ------ STATE: ERROR ------
+        else if (data->CurrentFetchState == FETCH_ERROR)
+        {
+            double timeSinceUpdate = (sc.CurrentSystemDateTime - data->LastUpdate).GetAsDouble() * 86400.0;
+            if (timeSinceUpdate >= refreshInterval)
+                data->CurrentFetchState = FETCH_IDLE;
         }
     }
 
-    // Obtenir les valeurs avec forward fill depuis les maps
+    // ========================================
+    //   SUBGRAPH RENDERING (all bars)
+    // ========================================
+
     SCDateTime now = sc.BaseDateTimeIn[sc.Index];
     
-    // Debug: pour la première barre, log le nombre de points chargés
-    if (sc.Index == 0 && !data->zeroMap.empty())
+    // Debug: log map sizes once on full recalculation
+    if (sc.Index == 0 && sc.IsFullRecalculation && !data->zeroMap.empty())
     {
         SCString msg;
-        msg.Format("GEX_TERMINAL: Maps chargées - Zero: %d, PosVol: %d, Long: %d", 
-                   data->zeroMap.size(), data->posVolMap.size(), data->longMap.size());
+        msg.Format("GEX_TERMINAL: Maps loaded - Zero: %d, PosVol: %d, Long: %d", 
+                   (int)data->zeroMap.size(), (int)data->posVolMap.size(), (int)data->longMap.size());
         sc.AddMessageToLog(msg, 0);
     }
     
@@ -1118,8 +1027,6 @@ SCSFExport scsf_GexBotAPI(SCStudyInterfaceRef sc)
     float majPosVal = getVal(data->majPosMap);
     float majNegVal = getVal(data->majNegMap);
 
-    // Appliquer le multiplicateur aux valeurs
-    // Set subgraph values (utiliser les valeurs des maps ou les valeurs actuelles si pas de données historiques)
     float zeroGamma = (zeroVal != -FLT_MAX) ? zeroVal : ((data->ProfileMeta.zero_gamma != 0) ? static_cast<float>(data->ProfileMeta.zero_gamma) : static_cast<float>(data->Majors.zero_gamma));
     LongGamma[sc.Index] = multiplier * ((longVal != -FLT_MAX) ? longVal : static_cast<float>(data->Greeks.major_long_gamma));
     ShortGamma[sc.Index] = multiplier * ((shortVal != -FLT_MAX) ? shortVal : static_cast<float>(data->Greeks.major_short_gamma));
