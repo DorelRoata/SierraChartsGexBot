@@ -104,6 +104,11 @@ SCSFExport scsf_GexBotDataCollector(SCStudyInterfaceRef sc)
     if (CurrentTime < StartTime || CurrentTime > EndTime)
         return;
 
+    // Day Filter: Exclude Weekends (Sunday=0, Saturday=6)
+    int dayOfWeek = CurrentDateTime.GetDayOfWeek();
+    if (dayOfWeek == DA_SATURDAY || dayOfWeek == DA_SUNDAY)
+        return;
+
     // Rate Limiting (Throttle writes)
     SCDateTime LastWrite = SCDateTime(0.0);
     if (LastLogTime.GetLength() > 0)

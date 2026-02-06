@@ -789,7 +789,7 @@ SCSFExport scsf_GexBotAPI(SCStudyInterfaceRef sc)
         RefreshIntervalInput.SetIntLimits(1, 3600);
         CsvReadPathInput.Name = "CSV Read Path (e.g. C:\\GexBot\\Data)"; CsvReadPathInput.SetString("");
         CsvWritePathInput.Name = "CSV Write Path (e.g. C:\\GexBot\\Data)"; CsvWritePathInput.SetString("");
-        DaysToLoadInput.Name = "Days to Load"; DaysToLoadInput.SetInt(15);
+        DaysToLoadInput.Name = "Days to Load"; DaysToLoadInput.SetInt(2);
         DaysToLoadInput.SetIntLimits(1, 30);
         TZOffsetInput.Name = "UTC Offset (hours)"; TZOffsetInput.SetInt(0);
         TZOffsetInput.SetIntLimits(-12, 12);
