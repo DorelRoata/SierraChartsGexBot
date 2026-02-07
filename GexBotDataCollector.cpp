@@ -206,7 +206,7 @@ SCSFExport scsf_GexBotDataCollector(SCStudyInterfaceRef sc)
     unsigned int bytesWritten = 0;
     if (needsHeader)
     {
-        const char* header = "timestamp,spot,zero_gamma,call_vol,put_vol,call_oi,put_oi,net_vol,net_oi,long_gamma,short_gamma\r\n";
+        const char* header = "timestamp,spot,zero_gamma,major_pos_vol,major_neg_vol,major_pos_oi,major_neg_oi,sum_gex_vol,sum_gex_oi,major_long_gamma,major_short_gamma\r\n";
         sc.WriteFile(fileHandle, header, (int)strlen(header), &bytesWritten);
     }
 
