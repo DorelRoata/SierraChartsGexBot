@@ -206,7 +206,7 @@ SCSFExport scsf_GexBotDataCollector(SCStudyInterfaceRef sc)
     unsigned int bytesWritten = 0;
     if (needsHeader)
     {
-        const char* header = "timestamp,spot,zero_gamma,major_pos_vol,major_neg_vol,major_pos_oi,major_neg_oi,sum_gex_vol,sum_gex_oi,major_long_gamma,major_short_gamma\r\n";
+        const char* header = "timestamp,spot,zero_gamma,major_pos_vol,major_neg_vol,major_pos_oi,major_neg_oi,sum_gex_vol,sum_gex_oi,delta_risk_reversal,major_long_gamma,major_short_gamma,major_positive,major_negative,net\r\n";
         sc.WriteFile(fileHandle, header, (int)strlen(header), &bytesWritten);
     }
 
@@ -214,9 +214,13 @@ SCSFExport scsf_GexBotDataCollector(SCStudyInterfaceRef sc)
     // Unix Timestamp
     double unixTs = (CurrentDateTime.GetAsDouble() - 25569.0) * 86400.0;
     
+    // Write match for GexBotTerminalAPI/Viewer format:
+    // timestamp, spot, zero, pos_vol, neg_vol, pos_oi, neg_oi, net_vol, net_oi, delta_rr, long, short, maj_pos, maj_neg, net
+    // We only have SGs for the first set. We will fill others with 0.
+    
     char line[512];
-    snprintf(line, sizeof(line), "%.1f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\r\n",
-        unixTs, Spot, Zero, CallVol, PutVol, CallOI, PutOI, NetVol, NetOI, Long, Short);
+    snprintf(line, sizeof(line), "%.1f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\r\n",
+        unixTs, Spot, Zero, CallVol, PutVol, CallOI, PutOI, NetVol, NetOI, 0.0, Long, Short, 0.0, 0.0, 0.0);
 
     sc.WriteFile(fileHandle, line, (int)strlen(line), &bytesWritten);
     sc.CloseFile(fileHandle);

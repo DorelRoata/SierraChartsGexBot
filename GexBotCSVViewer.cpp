@@ -272,24 +272,23 @@ float GetValue(const std::map<SCDateTime, float>& map, SCDateTime targetTime)
 
 SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
 {
-    SCSubgraphRef LongGamma = sc.Subgraph[0];
-    SCSubgraphRef ShortGamma = sc.Subgraph[1];
-    SCSubgraphRef MajorPositive = sc.Subgraph[2];
-    SCSubgraphRef MajorNegative = sc.Subgraph[3];
-    SCSubgraphRef Zero = sc.Subgraph[4];
-    SCSubgraphRef MajorPosVol = sc.Subgraph[5];
-    SCSubgraphRef MajorNegVol = sc.Subgraph[6];
-    SCSubgraphRef MajorPosOi = sc.Subgraph[7];
-    SCSubgraphRef MajorNegOi = sc.Subgraph[8];
-    SCSubgraphRef GreekMajorPos = sc.Subgraph[9];
-    SCSubgraphRef GreekMajorNeg = sc.Subgraph[10];
+    // Mapped strictly to User Requirements (SG1 - SG9)
+    // Note: Code uses 0-based index, so SG1 is Subgraph[0]
+    SCSubgraphRef SG1_CallVol = sc.Subgraph[0];
+    SCSubgraphRef SG2_PutVol = sc.Subgraph[1];
+    SCSubgraphRef SG3_Zero = sc.Subgraph[2];
+    SCSubgraphRef SG4_CallOI = sc.Subgraph[3];
+    SCSubgraphRef SG5_PutOI = sc.Subgraph[4];
+    SCSubgraphRef SG6_Long = sc.Subgraph[5];
+    SCSubgraphRef SG7_Short = sc.Subgraph[6];
+    SCSubgraphRef SG8_NetVol = sc.Subgraph[7];
+    SCSubgraphRef SG9_NetOI = sc.Subgraph[8];
 
     SCInputRef TickerInput = sc.Input[0];
     SCInputRef CsvPathInput = sc.Input[1];
     SCInputRef RefreshInterval = sc.Input[2];
     SCInputRef DaysToLoad = sc.Input[3];
     SCInputRef TZOffset = sc.Input[4];
-    SCInputRef Multiplier = sc.Input[5];
 
     if (sc.SetDefaults)
     {
@@ -298,20 +297,24 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
         sc.GraphRegion = 0;
         sc.ValueFormat = 2;
 
-        LongGamma.Name = "Long Gamma"; LongGamma.DrawStyle = DRAWSTYLE_DASH; LongGamma.PrimaryColor = RGB(0, 255, 255); LongGamma.LineWidth = 2;
-        ShortGamma.Name = "Short Gamma"; ShortGamma.DrawStyle = DRAWSTYLE_DASH; ShortGamma.PrimaryColor = RGB(174, 74, 213); ShortGamma.LineWidth = 2;
-        MajorPositive.Name = "Major Positive"; MajorPositive.DrawStyle = DRAWSTYLE_DASH; MajorPositive.PrimaryColor = RGB(0, 255, 0); MajorPositive.LineWidth = 1;
-        MajorNegative.Name = "Major Negative"; MajorNegative.DrawStyle = DRAWSTYLE_DASH; MajorNegative.PrimaryColor = RGB(255, 0, 0); MajorNegative.LineWidth = 1;
-        Zero.Name = "Zero Gamma"; Zero.DrawStyle = DRAWSTYLE_DASH; Zero.PrimaryColor = RGB(252, 177, 3); Zero.LineWidth = 1;
-        MajorPosVol.Name = "Major + Vol"; MajorPosVol.DrawStyle = DRAWSTYLE_DASH; MajorPosVol.PrimaryColor = RGB(0, 159, 0); MajorPosVol.LineWidth = 1;
-        MajorNegVol.Name = "Major - Vol"; MajorNegVol.DrawStyle = DRAWSTYLE_DASH; MajorNegVol.PrimaryColor = RGB(174, 0, 0); MajorNegVol.LineWidth = 1;
+        SG1_CallVol.Name = "Major Call Gamma (Vol)"; SG1_CallVol.DrawStyle = DRAWSTYLE_DASH; SG1_CallVol.PrimaryColor = RGB(0, 159, 0); SG1_CallVol.LineWidth = 1;
+        SG2_PutVol.Name = "Major Put Gamma (Vol)"; SG2_PutVol.DrawStyle = DRAWSTYLE_DASH; SG2_PutVol.PrimaryColor = RGB(174, 0, 0); SG2_PutVol.LineWidth = 1;
+        SG3_Zero.Name = "Zero Gamma"; SG3_Zero.DrawStyle = DRAWSTYLE_DASH; SG3_Zero.PrimaryColor = RGB(252, 177, 3); SG3_Zero.LineWidth = 1;
+        
+        SG4_CallOI.Name = "Major Call Gamma (OI)"; SG4_CallOI.DrawStyle = DRAWSTYLE_DASH; SG4_CallOI.PrimaryColor = RGB(0, 255, 255); SG4_CallOI.LineWidth = 1;
+        SG5_PutOI.Name = "Major Put Gamma (OI)"; SG5_PutOI.DrawStyle = DRAWSTYLE_DASH; SG5_PutOI.PrimaryColor = RGB(255, 165, 0); SG5_PutOI.LineWidth = 1;
+        
+        SG6_Long.Name = "Major Long Gamma"; SG6_Long.DrawStyle = DRAWSTYLE_DASH; SG6_Long.PrimaryColor = RGB(0, 255, 255); SG6_Long.LineWidth = 2;
+        SG7_Short.Name = "Major Short Gamma"; SG7_Short.DrawStyle = DRAWSTYLE_DASH; SG7_Short.PrimaryColor = RGB(174, 74, 213); SG7_Short.LineWidth = 2;
+        
+        SG8_NetVol.Name = "Net GEX (Vol)"; SG8_NetVol.DrawStyle = DRAWSTYLE_HIDDEN; SG8_NetVol.PrimaryColor = RGB(200, 200, 200);
+        SG9_NetOI.Name = "Net GEX (OI)"; SG9_NetOI.DrawStyle = DRAWSTYLE_HIDDEN; SG9_NetOI.PrimaryColor = RGB(150, 150, 150);
         
         TickerInput.Name = "Ticker"; TickerInput.SetString("ES_SPX");
         CsvPathInput.Name = "Local CSV Path"; CsvPathInput.SetString("C:\\GexBot\\Data");
         RefreshInterval.Name = "Refresh Interval (sec)"; RefreshInterval.SetInt(10);
         DaysToLoad.Name = "Days to Load"; DaysToLoad.SetInt(2);
         TZOffset.Name = "UTC Offset (hours)"; TZOffset.SetInt(0);
-        Multiplier.Name = "Multiplier"; Multiplier.SetFloat(1.0f);
 
         return;
     }
@@ -342,7 +345,6 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
 
     // Render Logic
     SCDateTime now = sc.BaseDateTimeIn[sc.Index];
-    float m = Multiplier.GetFloat();
 
     float vZero = GetValue(data->zeroMap, now);
     float vPosVol = GetValue(data->posVolMap, now);
@@ -351,19 +353,16 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
     float vNegOi = GetValue(data->negOiMap, now);
     float vLong = GetValue(data->longMap, now);
     float vShort = GetValue(data->shortMap, now);
-    float vMajPos = GetValue(data->majPosMap, now);
-    float vMajNeg = GetValue(data->majNegMap, now);
+    float vNetVol = GetValue(data->netMap, now); 
+    // float vNetOi = GetValue(data->netOiMap, now); // Not parsed currently, can be added if needed
 
-    // If live bar and no exact match, fallback to last known? 
-    // For safety, GetValue will return FLT_MAX if not found.
-    // If users want "hold last value", we'd implement that here.
-    // Assuming strict time alignment from CSV for accuracy.
-
-    if (vLong != -FLT_MAX) LongGamma[sc.Index] = vLong * m;
-    if (vShort != -FLT_MAX) ShortGamma[sc.Index] = vShort * m;
-    if (vMajPos != -FLT_MAX) MajorPositive[sc.Index] = vMajPos * m;
-    if (vMajNeg != -FLT_MAX) MajorNegative[sc.Index] = vMajNeg * m;
-    if (vZero != -FLT_MAX) Zero[sc.Index] = vZero * m;
-    if (vPosVol != -FLT_MAX) MajorPosVol[sc.Index] = vPosVol * m;
-    if (vNegVol != -FLT_MAX) MajorNegVol[sc.Index] = vNegVol * m;
+    if (vPosVol != -FLT_MAX) SG1_CallVol[sc.Index] = vPosVol;
+    if (vNegVol != -FLT_MAX) SG2_PutVol[sc.Index] = vNegVol;
+    if (vZero != -FLT_MAX) SG3_Zero[sc.Index] = vZero;
+    if (vPosOi != -FLT_MAX) SG4_CallOI[sc.Index] = vPosOi;
+    if (vNegOi != -FLT_MAX) SG5_PutOI[sc.Index] = vNegOi;
+    if (vLong != -FLT_MAX) SG6_Long[sc.Index] = vLong;
+    if (vShort != -FLT_MAX) SG7_Short[sc.Index] = vShort;
+    if (vNetVol != -FLT_MAX) SG8_NetVol[sc.Index] = vNetVol;
+    // SG9_NetOI is waiting for parsing implementation if required
 }
