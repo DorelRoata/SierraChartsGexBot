@@ -15,54 +15,52 @@ This project contains a custom C++ study for **Sierra Chart** that integrates wi
 
 ## Architecture
 
-The following diagram illustrates the high-level architecture of the system:
+The system is designed with a **Hub-and-Spoke** architecture to minimize API usage and file conflicts while allowing unlimited chart instances.
 
 ```mermaid
 graph TD
     subgraph "External"
-        API[GexBot API<br/>api.gexbot.com]
+        Cloud[GexBot API Cloud]
     end
 
-    subgraph "Local Workstation"
-        direction TB
-        
-        subgraph "Sierra Chart Environment"
-            SC[Sierra Chart Terminal]
-            Study[Custom Study<br/>GEX_TERMINAL_API]
-        end
+    subgraph "Master Chart"
+        SourceStudy[**GEX BOT API**<br/>(Original DLL)]
+        Collector[**GexBot Data Collector**<br/>(Scraper)]
+        SourceStudy -- "Subgraphs (SG1-SG9)" --> Collector
+    end
 
-        subgraph "Local Storage"
-            DB[(CSV Storage<br/>.csv files)]
-        end
+    subgraph "Local Storage"
+        CSV[(**CSV Repository**<br/>Daily Files)]
+        Collector -- "Writes (Append Mode)" --> CSV
+    end
+
+    subgraph "Client Charts (Unlimited)"
+        Viewer1[**GexBot CSV Viewer**<br/>Chart 2]
+        Viewer2[**GexBot CSV Viewer**<br/>Chart 3]
+        ViewerN[**GexBot CSV Viewer**<br/>Chart N]
     end
 
     %% Data Flow
-    API -- "HTTP GET (JSON)" --> Study
-    Study -- "Parse & Process" --> SC
-    Study -- "Read/Write History" --> DB
-    
-    %% Internal Study Components
-    subgraph "Study Components"
-        HTTP[SC Async HTTP]
-        JSON[JSON Parser]
-        Cache[Data Structures<br/>Maps & Vectors]
-        Renderer[Subgraph Renderer]
-    end
-    
-    Study --- HTTP
-    Study --- JSON
-    Study --- Cache
-    Study --- Renderer
+    Cloud -- "HTTP JSON" --> SourceStudy
+    CSV -- "Read Polling" --> Viewer1
+    CSV -- "Read Polling" --> Viewer2
+    CSV -- "Read Polling" --> ViewerN
 ```
 
 ## Setup & Usage
 
-1.  **Compile**: Use the Sierra Chart C++ compiler to build `GexBotTerminalAPI.cpp`.
-2.  **Add to Chart**: Add the **GEX BOT API** study to your chart.
-3.  **Configuration**:
-    *   **API Key**: Enter your valid GexBot API key.
-    *   **Ticker**: Specify the ticker (e.g., `ES_SPX`).
-    *   **CSV Paths**: Set valid local paths for reading/writing the CSV files (e.g., `C:\GexBot\Data`).
+### 1. Master Chart (The Source)
+*   **Study 1**: Add the original `GEX BOT API` (or Binary DLL). Configure it with your valid API Key.
+*   **Study 2**: Add `GexBotDataCollector`.
+    *   **Source Chart ID**: Set to the Chart ID of this Master Chart.
+    *   **Output Path**: Set to a central folder (e.g., `C:\GexBot\Data`).
+    *   **Tickers**: Ensure the ticker name matches correctly.
+
+### 2. Client Charts (The Viewers)
+*   **Study**: Add `GexBotCSVViewer`.
+*   **CSV Path**: Set to the *same* Output Path used in the Collector.
+*   **Refresh Interval**: Default is 10s. The viewer will automatically check for updates.
+*   **Benefit**: These charts use **ZERO** API credits and have **NO** networking overhead.
 
 ## Proposed Subgraph Mapping & CSV Structure
 
