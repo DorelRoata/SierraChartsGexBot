@@ -19,25 +19,25 @@ The system is designed with a **Hub-and-Spoke** architecture to minimize API usa
 
 ```mermaid
 graph TD
-    subgraph "External"
+    subgraph External
         Cloud[GexBot API Cloud]
     end
 
-    subgraph "Master Chart"
-        SourceStudy[**GEX BOT API**<br/>(Original DLL)]
-        Collector[**GexBot Data Collector**<br/>(Scraper)]
+    subgraph MasterChart [Master Chart]
+        SourceStudy[GEX BOT API - Original DLL]
+        Collector[GexBot Data Collector - Scraper]
         SourceStudy -- "Subgraphs (SG1-SG9)" --> Collector
     end
 
-    subgraph "Local Storage"
-        CSV[(**CSV Repository**<br/>Daily Files)]
+    subgraph LocalStorage [Local Storage]
+        CSV[("CSV Repository (Daily Files)")]
         Collector -- "Writes (Append Mode)" --> CSV
     end
 
-    subgraph "Client Charts (Unlimited)"
-        Viewer1[**GexBot CSV Viewer**<br/>Chart 2]
-        Viewer2[**GexBot CSV Viewer**<br/>Chart 3]
-        ViewerN[**GexBot CSV Viewer**<br/>Chart N]
+    subgraph ClientCharts [Client Charts]
+        Viewer1[GexBot CSV Viewer - Chart 2]
+        Viewer2[GexBot CSV Viewer - Chart 3]
+        ViewerN[GexBot CSV Viewer - Chart N]
     end
 
     %% Data Flow
