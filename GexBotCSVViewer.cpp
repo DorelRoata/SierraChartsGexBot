@@ -3,6 +3,7 @@
 #include <vector>
 #include <string>
 #include <sstream>
+#include <fstream> 
 #include <iomanip>
 #include <cmath>
 #include <cfloat>
@@ -15,7 +16,7 @@ SCDLLName("GEX_CSV_VIEWER")
 
 struct ViewerData
 {
-    // Historical maps for forward fill - using SCDateTime directly
+    // Historical maps
     std::map<SCDateTime, float> zeroMap;
     std::map<SCDateTime, float> posVolMap;
     std::map<SCDateTime, float> negVolMap;
@@ -32,8 +33,10 @@ struct ViewerData
     std::string LastTicker;
     int LastDaysCount = -1;
     SCDateTime LastUpdate;
-    std::set<std::string> CachedFilePaths;
     
+    // File Tracking for Incremental Updates
+    std::map<std::string, std::streampos> FileOffsets; 
+
     // Last known values for forward filling
     float lastZero = 0;
     float lastPosVol = 0;
@@ -100,8 +103,15 @@ int ParseCsvLine(const std::string& line, double* values, int maxFields)
         if (pos == line.length() || line[pos] == ',')
         {
             std::string field = line.substr(start, pos - start);
-            while (!field.empty() && (field.front() == ' ' || field.front() == '\t')) field.erase(0, 1);
-            while (!field.empty() && (field.back() == ' ' || field.back() == '\r' || field.back() == '\n')) field.pop_back();
+            
+            // Trim whitespace
+            size_t first = field.find_first_not_of(" \t");
+            if (std::string::npos == first) {
+                 field = "";
+            } else {
+                 size_t last = field.find_last_not_of(" \t\r\n");
+                 field = field.substr(first, (last - first + 1));
+            }
 
             values[count] = StringToDouble(field);
             count++;
@@ -112,64 +122,52 @@ int ParseCsvLine(const std::string& line, double* values, int maxFields)
     return count;
 }
 
-int LoadViewerCSV(SCStudyInterfaceRef sc, const std::string& fullPath, int tzOffsetHours, ViewerData* data)
+void LoadViewerCSV(const std::string& fullPath, int tzOffsetHours, ViewerData* data)
 {
-    int rowCount = 0;
-    int fileHandle = 0;
-    SCString scPath(fullPath.c_str());
+    // Use std::ifstream for flexible seeking
+    std::ifstream file(fullPath);
+    if (!file.is_open()) return;
+
+    // Check if we have a previous offset for this file
+    std::streampos offset = 0;
+    if (data->FileOffsets.count(fullPath))
+    {
+        offset = data->FileOffsets[fullPath];
+    }
     
-    // Open for reading (shared access)
-    if (!sc.OpenFile(scPath, n_ACSIL::FILE_MODE_OPEN_EXISTING_FOR_SEQUENTIAL_READING, fileHandle))
-        return 0;
-
-    const int BUFFER_SIZE = 256 * 1024; 
-    char* buffer = new char[BUFFER_SIZE];
-    unsigned int bytesRead = 0;
-    int totalRead = 0;
-
-    while (sc.ReadFile(fileHandle, buffer + totalRead, BUFFER_SIZE - totalRead - 1, &bytesRead) && bytesRead > 0)
-    {
-        totalRead += bytesRead;
-        if (totalRead >= BUFFER_SIZE - 1) break;
-        bytesRead = 0;
+    // Get current file size
+    file.seekg(0, std::ios::end);
+    std::streampos fileSize = file.tellg();
+    
+    // Logic: 
+    // 1. If fileSize < offset, file was likely truncated/recreated -> Start from 0
+    // 2. If offset == 0, read from start
+    // 3. Otherwise seek to offset
+    if (fileSize < offset) {
+        offset = 0;
     }
-    buffer[totalRead] = '\0';
-    sc.CloseFile(fileHandle);
+    
+    file.seekg(offset);
 
-    if (totalRead == 0)
+    std::string line;
+    bool isFirstLine = (offset == 0);
+
+    while (std::getline(file, line))
     {
-        delete[] buffer;
-        return 0;
-    }
-
-    std::string content(buffer, totalRead);
-    delete[] buffer;
-
-    size_t lineStart = 0;
-    bool isFirstLine = true;
-
-    while (lineStart < content.length())
-    {
-        size_t lineEnd = content.find('\n', lineStart);
-        if (lineEnd == std::string::npos) lineEnd = content.length();
-
-        std::string line = content.substr(lineStart, lineEnd - lineStart);
-        lineStart = lineEnd + 1;
-
-        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+        // Skip empty lines or header if we are starting from 0
         if (line.empty()) continue;
+        
+        // Remove potential carriage return
+        if (!line.empty() && line.back() == '\r') line.pop_back();
 
         if (isFirstLine)
         {
-            isFirstLine = false;
+            isFirstLine = false; 
+            // Simple check for header: if it contains "timestamp" or starts with non-digit (and not a minus sign)
             if (line.find("timestamp") != std::string::npos || (!line.empty() && !isdigit(line[0]) && line[0] != '-'))
                 continue;
         }
 
-        // 0:timestamp, 1:spot, 2:zero_gamma, 3:major_pos_vol, 4:major_neg_vol,
-        // 5:major_pos_oi, 6:major_neg_oi, 7:sum_gex_vol, 8:sum_gex_oi,
-        // 9:delta_risk_reversal, 10:major_long_gamma, 11:major_short_gamma,
-        // 12:major_positive, 13:major_negative, 14:net
         double values[15] = {0};
         int fieldCount = ParseCsvLine(line, values, 15);
         if (fieldCount < 5) continue;
@@ -189,20 +187,34 @@ int LoadViewerCSV(SCStudyInterfaceRef sc, const std::string& fullPath, int tzOff
         double sht   = (fieldCount > 11) ? values[11] : 0;
         double mjp   = (fieldCount > 12) ? values[12] : 0;
         double mjn   = (fieldCount > 13) ? values[13] : 0;
-
-        if (!std::isnan(zero) && zero != 0) { data->zeroMap[dt] = (float)zero; data->lastZero = (float)zero; }
-        if (!std::isnan(posv) && posv != 0) { data->posVolMap[dt] = (float)posv; data->lastPosVol = (float)posv; }
-        if (!std::isnan(negv) && negv != 0) { data->negVolMap[dt] = (float)negv; data->lastNegVol = (float)negv; }
-        if (!std::isnan(posoi) && posoi != 0) { data->posOiMap[dt] = (float)posoi; data->lastPosOi = (float)posoi; }
-        if (!std::isnan(negoi) && negoi != 0) { data->negOiMap[dt] = (float)negoi; data->lastNegOi = (float)negoi; }
-        if (!std::isnan(lng) && lng != 0) { data->longMap[dt] = (float)lng; data->lastLong = (float)lng; }
-        if (!std::isnan(sht) && sht != 0) { data->shortMap[dt] = (float)sht; data->lastShort = (float)sht; }
-        if (!std::isnan(mjp) && mjp != 0) { data->majPosMap[dt] = (float)mjp; data->lastMajPos = (float)mjp; }
-        if (!std::isnan(mjn) && mjn != 0) { data->majNegMap[dt] = (float)mjn; data->lastMajNeg = (float)mjn; }
-
-        ++rowCount;
+        double netv  = (fieldCount > 7)  ? values[7] : 0; // mapped to field 7 based on header
+        
+        if (!std::isnan(zero) && zero != 0) { data->zeroMap[dt] = (float)zero; }
+        if (!std::isnan(posv) && posv != 0) { data->posVolMap[dt] = (float)posv; }
+        if (!std::isnan(negv) && negv != 0) { data->negVolMap[dt] = (float)negv; }
+        if (!std::isnan(posoi) && posoi != 0) { data->posOiMap[dt] = (float)posoi; }
+        if (!std::isnan(negoi) && negoi != 0) { data->negOiMap[dt] = (float)negoi; }
+        if (!std::isnan(lng) && lng != 0) { data->longMap[dt] = (float)lng; }
+        if (!std::isnan(sht) && sht != 0) { data->shortMap[dt] = (float)sht; }
+        if (!std::isnan(mjp) && mjp != 0) { data->majPosMap[dt] = (float)mjp; }
+        if (!std::isnan(mjn) && mjn != 0) { data->majNegMap[dt] = (float)mjn; }
+        if (!std::isnan(netv) && netv != 0) { data->netMap[dt] = (float)netv; }
+        
+        // Update last cached values
+        data->lastZero = (float)zero; 
+        data->lastPosVol = (float)posv;
+        data->lastNegVol = (float)negv;
+        
     }
-    return rowCount;
+    
+    // Save new offset
+    if (!file.eof() && !file.fail()) {
+        data->FileOffsets[fullPath] = file.tellg();
+    } else {
+        // If we hit EOF (which getline does), clear flags and get position
+        file.clear();
+        data->FileOffsets[fullPath] = file.tellg();
+    }
 }
 
 void ReloadFiles(SCStudyInterfaceRef sc, ViewerData* data, const std::string& baseFolder, const std::string& ticker, int days, int tzOffset)
@@ -219,7 +231,9 @@ void ReloadFiles(SCStudyInterfaceRef sc, ViewerData* data, const std::string& ba
         data->shortMap.clear();
         data->majPosMap.clear();
         data->majNegMap.clear();
-        data->CachedFilePaths.clear(); 
+        data->netMap.clear();
+        
+        data->FileOffsets.clear(); // Reset offsets so we re-read revised files from scratch
         
         data->LastBasePath = baseFolder;
         data->LastTicker = ticker;
@@ -228,24 +242,21 @@ void ReloadFiles(SCStudyInterfaceRef sc, ViewerData* data, const std::string& ba
 
     SCDateTime reference = sc.GetCurrentDateTime();
     
-    // Always force reload of today's file to get updates
-    // Load older files only if we haven't seen them
+    // Iterate from oldest to newest day
     for (int i = days - 1; i >= 0; --i)
     {
         SCDateTime date = SubtractDays(reference, i);
         std::string suffix = FormatDateSuffix(date);
         std::string path = baseFolder + "\\Tickers " + suffix + "\\" + ticker + ".csv";
         
-        bool isToday = (i == 0);
-        bool isAlreadyLoaded = data->CachedFilePaths.count(path) > 0;
-        
         if (FileExists(path))
         {
-            if (isToday || !isAlreadyLoaded)
-            {
-                int rows = LoadViewerCSV(sc, path, tzOffset, data);
-                if (rows > 0) data->CachedFilePaths.insert(path);
-            }
+            // For older files (i > 0), simple optimization:
+            // If we have already read this file to the end (offset > 0), we assume it doesn't change 
+            // (historical days are closed). 
+            // However, to be safe, we just let the incremental reader check. 
+            // It will see size == offset and return immediately.
+            LoadViewerCSV(path, tzOffset, data);
         }
     }
 }
@@ -261,8 +272,6 @@ float GetValue(const std::map<SCDateTime, float>& map, SCDateTime targetTime)
     double delta = fabs((targetTime - it->first).GetAsDouble() * 86400.0);
     if (delta <= 300.0) return it->second;
     
-    // If we are live (last bar) and the map has recent data, maybe return last known?
-    // For now stick to strict timestamp matching
     return -FLT_MAX;
 }
 
@@ -273,7 +282,6 @@ float GetValue(const std::map<SCDateTime, float>& map, SCDateTime targetTime)
 SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
 {
     // Mapped strictly to User Requirements (SG1 - SG9)
-    // Note: Code uses 0-based index, so SG1 is Subgraph[0]
     SCSubgraphRef SG1_CallVol = sc.Subgraph[0];
     SCSubgraphRef SG2_PutVol = sc.Subgraph[1];
     SCSubgraphRef SG3_Zero = sc.Subgraph[2];
@@ -333,10 +341,13 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
     }
 
     // Refresh Logic (Last Bar Only)
+    // We try to reload data periodically
     if (sc.Index == sc.ArraySize - 1)
     {
         double timeSinceLast = (sc.CurrentSystemDateTime - data->LastUpdate).GetAsDouble() * 86400.0;
-        if (timeSinceLast >= RefreshInterval.GetInt())
+        
+        // Initial load or periodic refresh
+        if (data->LastUpdate.GetAsDouble() == 0.0 || timeSinceLast >= RefreshInterval.GetInt())
         {
             ReloadFiles(sc, data, CsvPathInput.GetString(), TickerInput.GetString(), DaysToLoad.GetInt(), TZOffset.GetInt());
             data->LastUpdate = sc.CurrentSystemDateTime;
@@ -354,8 +365,7 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
     float vLong = GetValue(data->longMap, now);
     float vShort = GetValue(data->shortMap, now);
     float vNetVol = GetValue(data->netMap, now); 
-    // float vNetOi = GetValue(data->netOiMap, now); // Not parsed currently, can be added if needed
-
+    
     if (vPosVol != -FLT_MAX) SG1_CallVol[sc.Index] = vPosVol;
     if (vNegVol != -FLT_MAX) SG2_PutVol[sc.Index] = vNegVol;
     if (vZero != -FLT_MAX) SG3_Zero[sc.Index] = vZero;
@@ -364,5 +374,5 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
     if (vLong != -FLT_MAX) SG6_Long[sc.Index] = vLong;
     if (vShort != -FLT_MAX) SG7_Short[sc.Index] = vShort;
     if (vNetVol != -FLT_MAX) SG8_NetVol[sc.Index] = vNetVol;
-    // SG9_NetOI is waiting for parsing implementation if required
+    
 }
