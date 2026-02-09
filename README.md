@@ -1,80 +1,92 @@
-# SierraChart GexBot Terminal API
+# SierraCharts GexBot Integration
 
-This project contains a custom C++ study for **Sierra Chart** that integrates with the **GexBot API**. It is designed to fetch, process, and visualize real-time and historical Gamma Exposure (GEX) data directly on your trading charts.
+This project provides a robust integration between GexBot data and Sierra Chart, enabling real-time recording, storage, and visualization of Gamma Exposure (GEX) data.
 
-## Features
+## 🏗️ Architecture
 
-*   **Real-time API Integration**: Fetches Majors, Profile, and Greeks data from `api.gexbot.com` using Sierra Chart's Async HTTP.
-*   **Local Data Caching**: Uses **CSV Files** to store historical data locally, enabling fast retrieval and "forward fill" logic for days without immediate API data.
-*   **Comprehensive Visualization**: Plots key metrics as subgraphs:
-    *   Zero Gamma Levels
-    *   Major Positive/Negative Vol & OI
-    *   Long/Short Gamma
-    *   Greeks (Major Positive/Negative)
-*   **Customizable**: User inputs for API Key, Ticker, Refresh Intervals, and Database Paths.
+The system consists of two independent studies (DLLs) that work in a **Producer-Consumer** relationship:
 
-## Architecture
+### 1. Producer: `GexBotDataCollector`
+*   **Role:** Runs on the chart that has the GexBot API connected.
+*   **Function:** Reads the subgraph data from the GexBot API study, formats it, and writes it to a local CSV file.
+*   **Format:** Creates daily files automatically (e.g., `Tickers 02.09.2026/ES_SPX.csv`).
+*   **Performance:** Lightweight write operation throttled to a user-defined interval (default 10s).
 
-The system is designed with a **Hub-and-Spoke** architecture to minimize API usage and file conflicts while allowing unlimited chart instances.
+### 2. Consumer: `GexBotCSVViewer`
+*   **Role:** Runs on **any** chart where you want to view the history.
+*   **Function:** Reads the CSV files created by the Collector and plots them as historical subgraphs.
+*   **Integration:** Can be used on 1-minute, 5-minute, or any other timeframe charts.
+*   **Optimization:** Uses **Incremental Reading** technology. It tracks the file size and only reads new data appended since the last check, ensuring O(1) performance even with large datasets.
 
-```mermaid
-graph TD
-    subgraph External
-        Cloud[GexBot API Cloud]
-    end
+## 🚀 Setup & Installation
 
-    subgraph MasterChart [Master Chart]
-        SourceStudy[GEX BOT API - Original DLL]
-        Collector[GexBot Data Collector - Scraper]
-        SourceStudy -- "Subgraphs (SG1-SG9)" --> Collector
-    end
+### 1. Prerequisite
+Ensure you have the GexBot API study installed and working on a chart in Sierra Chart.
 
-    subgraph LocalStorage [Local Storage]
-        CSV[("CSV Repository (Daily Files)")]
-        Collector -- "Writes (Append Mode)" --> CSV
-    end
+### 2. Compilation
+1.  Open Sierra Chart.
+2.  Go to **Analysis** -> **Build Custom Studies DLL**.
+3.  Select the following files:
+    *   `GexBotDataCollector.cpp`
+    *   `GexBotCSVViewer.cpp`
+4.  Click **Build**.
+5.  Wait for the "Remote build is complete" message.
 
-    subgraph ClientCharts [Client Charts]
-        Viewer1[GexBot CSV Viewer - Chart 2]
-        Viewer2[GexBot CSV Viewer - Chart 3]
-        ViewerN[GexBot CSV Viewer - Chart N]
-    end
+### 3. Usage Guide
 
-    %% Data Flow
-    Cloud -- "HTTP JSON" --> SourceStudy
-    CSV -- "Read Polling" --> Viewer1
-    CSV -- "Read Polling" --> Viewer2
-    CSV -- "Read Polling" --> ViewerN
-```
+#### Step A: Setup the Collector (The "Recorder")
+1.  Open the chart that has the GexBot API running.
+2.  Go to **Analysis** -> **Studies**.
+3.  Add **`GexBot Data Collector`**.
+4.  Open the **Settings** for the study:
+    *   **Source Chart ID:** Set to `0` if it's the same chart, or the ID of the chart with GexBot API.
+    *   **Source Study ID:** The ID of the GexBot API study on that chart.
+    *   **Ticker Name:** `ES_SPX` (or your specific ticker).
+    *   **Output Directory:** `C:\GexBot\Data` (Ensure this folder exists or let the study create it).
+    *   **Write Interval:** `10` seconds (Recommended).
 
-## Setup & Usage
+#### Step B: Setup the Viewer (The "Player")
+1.  Open any chart where you want to see the data (e.g., a 5-minute ES chart).
+2.  Go to **Analysis** -> **Studies**.
+3.  Add **`GexBot CSV Viewer`**.
+4.  Open the **Settings**:
+    *   **Ticker:** Must match what you set in the Collector (e.g., `ES_SPX`).
+    *   **Local CSV Path:** Must match the Collector's output path (`C:\GexBot\Data`).
+    *   **Days to Load:** `2` (Loads today and yesterday). Increase this if you need more history (e.g., `30` for a month), but be aware the initial load will take a second.
+    *   **Refresh Interval:** `10` seconds (Should match or be slightly longer than the Collector).
 
-### 1. Master Chart (The Source)
-*   **Study 1**: Add the original `GEX BOT API` (or Binary DLL). Configure it with your valid API Key.
-*   **Study 2**: Add `GexBotDataCollector`.
-    *   **Source Chart ID**: Set to the Chart ID of this Master Chart.
-    *   **Output Path**: Set to a central folder (e.g., `C:\GexBot\Data`).
-    *   **Tickers**: Ensure the ticker name matches correctly.
+## 🎛️ Configuration Options
 
-### 2. Client Charts (The Viewers)
-*   **Study**: Add `GexBotCSVViewer`.
-*   **CSV Path**: Set to the *same* Output Path used in the Collector.
-*   **Refresh Interval**: Default is 10s. The viewer will automatically check for updates.
-*   **Benefit**: These charts use **ZERO** API credits and have **NO** networking overhead.
-
-## Proposed Subgraph Mapping & CSV Structure
-
-The following mapping is planned for future updates to align the CSV output and Subgraphs with the default GEXBOT API DLL standards:
-
-| SG Index (UI) | Subgraph Name (Label) | Description |
+### GexBot Data Collector
+| Input Name | Description | Default |
 | :--- | :--- | :--- |
-| **SG1** | Major Call Gamma by Volume | Major Positive Gamma Level (derived from Volume) |
-| **SG2** | Major Put Gamma by Volume | Major Negative Gamma Level (derived from Volume) |
-| **SG3** | Zero Gamma | Zero Gamma Level |
-| **SG4** | Major Call Gamma by OI | Major Positive Gamma Level (derived from OI) |
-| **SG5** | Major Put Gamma by OI | Major Negative Gamma Level (derived from OI) |
-| **SG6** | Major Long Gamma | Major Long Gamma Level |
-| **SG7** | Major Short Gamma | Major Short Gamma Level |
-| **SG8** | Net GEX Volume | Net Gamma Exposure (Volume) |
-| **SG9** | Net GEX OI | Net Gamma Exposure (Open Interest) |
+| **Source Chart ID** | The ID of the chart hosting the GexBot API study. Use `0` for "Current Chart". | `0` |
+| **Source Study ID** | The unique ID of the GexBot API study (found in the Studies list). | `0` |
+| **Ticker Name** | The name used for the CSV filename. | `ES_SPX` |
+| **Output Directory** | The base folder where daily subfolders will be created. | `C:\GexBot\Data` |
+| **Market Start/End** | Time filter to only record during specific hours. | `09:30:00` - `16:00:00` |
+| **Write Interval** | How often to save data to the CSV. Lower = more resolution, Higher = less disk usage. | `10s` |
 
+### GexBot CSV Viewer
+| Input Name | Description | Default |
+| :--- | :--- | :--- |
+| **Ticker** | Name of the ticker file to look for. | `ES_SPX` |
+| **Local CSV Path** | Base folder to search for data. | `C:\GexBot\Data` |
+| **Refresh Interval** | How often to check the file for new data. | `10s` |
+| **Days to Load** | Number of past days to load into history. | `2` |
+| **UTC Offset** | Offset in hours to adjust the timestamp if needed. | `0` |
+
+## 📊 Subgraph Mapping (Viewer)
+The Viewer automatically maps the CSV data to the following subgraphs:
+*   **SG1:** Major Call Gamma (Vol)
+*   **SG2:** Major Put Gamma (Vol)
+*   **SG3:** Zero Gamma
+*   **SG4:** Major Call Gamma (OI)
+*   **SG5:** Major Put Gamma (OI)
+*   **SG6:** Major Long Gamma
+*   **SG7:** Major Short Gamma
+*   **SG8:** Net GEX (Vol)
+*   **SG9:** Net GEX (OI)
+
+## ⚡ Performance Note
+The Viewer uses an **Incremental Read** strategy. It remembers the file position (offset) where it last stopped reading. On every update, it seeks directly to that position and only parses the few new lines added. This ensures zero CPU overhead during the trading day, even when the data file grows large.
