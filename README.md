@@ -11,6 +11,7 @@ The system consists of two independent studies (DLLs) that work in a **Producer-
 *   **Function:** Reads the subgraph data from the GexBot API study, formats it, and writes it to a local CSV file.
 *   **Format:** Creates daily files automatically (e.g., `Tickers 02.09.2026/ES_SPX.csv`).
 *   **Performance:** Lightweight write operation throttled to a user-defined interval (default 10s).
+*   **Timestamps:** Uses real-time wall clock for sub-bar resolution.
 
 ### 2. Consumer: `GexBotCSVViewer`
 *   **Role:** Runs on **any** chart where you want to view the history.
@@ -76,17 +77,57 @@ Ensure you have the GexBot API study installed and working on a chart in Sierra 
 | **Days to Load** | Number of past days to load into history. | `2` |
 | **UTC Offset** | Offset in hours to adjust the timestamp if needed. | `0` |
 
-## 📊 Subgraph Mapping (Viewer)
-The Viewer automatically maps the CSV data to the following subgraphs:
-*   **SG1:** Major Call Gamma (Vol)
-*   **SG2:** Major Put Gamma (Vol)
-*   **SG3:** Zero Gamma
-*   **SG4:** Major Call Gamma (OI)
-*   **SG5:** Major Put Gamma (OI)
-*   **SG6:** Major Long Gamma
-*   **SG7:** Major Short Gamma
-*   **SG8:** Net GEX (Vol)
-*   **SG9:** Net GEX (OI)
+## 📊 Subgraph Mapping
+
+### GexBot API Study (Source)
+The Collector reads from the GexBot API study using this subgraph order:
+
+| Index | Subgraph Name | Description |
+| :---: | :--- | :--- |
+| **0** | Major Call Gamma (Vol) | Call wall by volume |
+| **1** | Major Put Gamma (Vol) | Put wall by volume |
+| **2** | Zero Gamma | Zero gamma price level |
+| **3** | Major Call Gamma (OI) | Call wall by open interest |
+| **4** | Major Put Gamma (OI) | Put wall by open interest |
+| **5** | Major Long Gamma | *(Optional)* Long gamma level |
+| **6** | Major Short Gamma | *(Optional)* Short gamma level |
+| **7** | Net GEX (Vol) | Net gamma exposure by volume |
+| **8** | Net GEX (OI) | Net gamma exposure by open interest |
+
+> **Note:** Major Long Gamma (SG6) and Major Short Gamma (SG7) are **optional** subgraphs. If not enabled in the GexBot API study, they will record as 0.
+
+### CSV Viewer (Output)
+The Viewer plots the following subgraphs on your chart:
+
+| Subgraph | Name | Notes |
+| :---: | :--- | :--- |
+| **SG1** | Major Call Gamma (Vol) | Price level line |
+| **SG2** | Major Put Gamma (Vol) | Price level line |
+| **SG3** | Zero Gamma | Price level line |
+| **SG4** | Major Call Gamma (OI) | Price level line |
+| **SG5** | Major Put Gamma (OI) | Price level line |
+| **SG6** | Major Long Gamma | *(Optional)* Price level line |
+| **SG7** | Major Short Gamma | *(Optional)* Price level line |
+| **SG8** | Net GEX (Vol) | Hidden by default (different scale) |
+| **SG9** | Net GEX (OI) | Hidden by default (different scale) |
+
+> **Note:** The **Spot Price** is recorded in the CSV for reference but is **not graphed** by the Viewer (it comes from the chart's own price data).
+
+## ⚠️ Y-Axis Scaling Tips
+
+The GEX data contains values on **very different scales**:
+*   **Price Levels** (Zero Gamma, Call/Put Walls): ~5000-7000 for ES
+*   **Net GEX Values**: Can be in the millions (e.g., 15,000,000)
+
+If you enable all subgraphs at once, the Y-axis may "freak out" trying to fit everything.
+
+### Recommendations:
+1.  **Keep Net GEX subgraphs hidden** (they are hidden by default) if you only care about price levels.
+2.  **Use a separate Graph Region** for Net GEX:
+    *   In the Viewer study settings, set SG8/SG9 to a different Graph Region (e.g., Region 2).
+3.  **Use Manual Scale** if Auto Scale causes issues:
+    *   Right-click the chart -> **Chart Settings** -> **Scale** tab.
+    *   Set a manual range for the Y-axis.
 
 ## ⚡ Performance Note
 The Viewer uses an **Incremental Read** strategy. It remembers the file position (offset) where it last stopped reading. On every update, it seeks directly to that position and only parses the few new lines added. This ensures zero CPU overhead during the trading day, even when the data file grows large.
