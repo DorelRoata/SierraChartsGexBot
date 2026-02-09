@@ -106,18 +106,11 @@ SCSFExport scsf_GexBotDataCollector(SCStudyInterfaceRef sc)
 
     // Day Filter: Exclude Weekends (Sunday=0, Saturday=6)
     int dayOfWeek = CurrentDateTime.GetDayOfWeek();
-    if (dayOfWeek == DA_SATURDAY || dayOfWeek == DA_SUNDAY)
+    if (dayOfWeek == SATURDAY || dayOfWeek == SUNDAY)
         return;
 
     // Rate Limiting (Throttle writes)
     SCDateTime LastWrite = SCDateTime(0.0);
-    if (LastLogTime.GetLength() > 0)
-    {
-        // Simple string parsing or keep double in persistent memory
-        // Using persistent vars simplifies things
-         // We will just use the SCDateTime comparison logic
-    }
-    
     // We'll use a persistent int for "Last Write Time" to avoid string parsing overhead
     int& LastWriteTimeSec = sc.GetPersistentInt(2);
     int NowSec = CurrentDateTime.GetTimeInSeconds();
@@ -159,8 +152,6 @@ SCSFExport scsf_GexBotDataCollector(SCStudyInterfaceRef sc)
     // Use ArraySize-1 to get the latest value from the source study regardless of alignment
     int SrcIndex = SG_CallVol.GetArraySize() - 1;
     if (SrcIndex < 0) return;
-
-    float vMakeFloat(float v) { return v; } // Helper if needed, but direct access is float
 
     double CallVol = SG_CallVol[SrcIndex];
     double PutVol = SG_PutVol[SrcIndex];
