@@ -268,12 +268,11 @@ float GetValue(const std::map<SCDateTime, float>& map, SCDateTime targetTime)
     if (it == map.begin()) return -FLT_MAX;
     --it;
     
-    // 5 minute forward fill tolerance for history
-    double delta = fabs((targetTime - it->first).GetAsDouble() * 86400.0);
-    if (delta <= 300.0) return it->second;
-    
-    return -FLT_MAX;
+    // Forward fill indefinitely - no time limit
+    // Data persists until the next data point
+    return it->second;
 }
+
 
 // =========================
 //      MAIN STUDY
