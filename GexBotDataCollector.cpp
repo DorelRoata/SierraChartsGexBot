@@ -95,8 +95,8 @@ SCSFExport scsf_GexBotDataCollector(SCStudyInterfaceRef sc)
     if (sc.Index < sc.ArraySize - 1) 
         return;
 
-    // Time Filter
-    SCDateTime CurrentDateTime = sc.BaseDateTimeIn[sc.Index];
+    // Time Filter - Use REAL TIME for filtering and timestamps
+    SCDateTime CurrentDateTime = sc.CurrentSystemDateTime;
     int CurrentTime = CurrentDateTime.GetTime();    
     int StartTime = StartTimeInput.GetTime();
     int EndTime = EndTimeInput.GetTime();
@@ -164,6 +164,12 @@ SCSFExport scsf_GexBotDataCollector(SCStudyInterfaceRef sc)
     double NetOI = SG_NetOI[SrcIndex];
     
     double Spot = sc.BaseData[SC_CLOSE][sc.Index];
+
+    // Debug: Log values to SC message log (can be disabled later)
+    SCString debugMsg;
+    debugMsg.Format("GexCollector: Z=%.2f, CallV=%.2f, PutV=%.2f, Long=%.2f, Short=%.2f, Spot=%.2f",
+        Zero, CallVol, PutVol, Long, Short, Spot);
+    sc.AddMessageToLog(debugMsg, 0);
 
     // CSV Output
     std::string ticker = TickerInput.GetString();
