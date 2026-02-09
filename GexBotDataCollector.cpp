@@ -163,12 +163,14 @@ SCSFExport scsf_GexBotDataCollector(SCStudyInterfaceRef sc)
     double NetVol = SG_NetVol[SrcIndex];
     double NetOI = SG_NetOI[SrcIndex];
     
-    double Spot = sc.BaseData[SC_CLOSE][sc.Index];
+    // Get Spot price from the LAST bar of the chart (most recent close)
+    int lastBarIndex = sc.ArraySize - 1;
+    double Spot = sc.BaseData[SC_LAST][lastBarIndex];
 
     // Debug: Log values to SC message log (can be disabled later)
     SCString debugMsg;
-    debugMsg.Format("GexCollector: Z=%.2f, CallV=%.2f, PutV=%.2f, Long=%.2f, Short=%.2f, Spot=%.2f",
-        Zero, CallVol, PutVol, Long, Short, Spot);
+    debugMsg.Format("GexCollector: Chart#%d, Bars=%d, Spot=%.2f, Z=%.2f, CallV=%.2f, PutV=%.2f",
+        sc.ChartNumber, sc.ArraySize, Spot, Zero, CallVol, PutVol);
     sc.AddMessageToLog(debugMsg, 0);
 
     // CSV Output
