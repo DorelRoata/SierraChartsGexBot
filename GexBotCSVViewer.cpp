@@ -311,9 +311,11 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
         SG4_CallOI.Name = "Major Call Gamma (OI)"; SG4_CallOI.DrawStyle = DRAWSTYLE_DASH; SG4_CallOI.PrimaryColor = RGB(0, 255, 255); SG4_CallOI.LineWidth = 1;
         SG5_PutOI.Name = "Major Put Gamma (OI)"; SG5_PutOI.DrawStyle = DRAWSTYLE_DASH; SG5_PutOI.PrimaryColor = RGB(255, 165, 0); SG5_PutOI.LineWidth = 1;
         
-        SG6_Long.Name = "Major Long Gamma"; SG6_Long.DrawStyle = DRAWSTYLE_DASH; SG6_Long.PrimaryColor = RGB(0, 255, 255); SG6_Long.LineWidth = 2;
-        SG7_Short.Name = "Major Short Gamma"; SG7_Short.DrawStyle = DRAWSTYLE_DASH; SG7_Short.PrimaryColor = RGB(174, 74, 213); SG7_Short.LineWidth = 2;
+        // Hidden by default - requires State package (shows 0 for Classic users, breaks Y-axis)
+        SG6_Long.Name = "Major Long Gamma (State)"; SG6_Long.DrawStyle = DRAWSTYLE_HIDDEN; SG6_Long.PrimaryColor = RGB(0, 255, 255); SG6_Long.LineWidth = 2;
+        SG7_Short.Name = "Major Short Gamma (State)"; SG7_Short.DrawStyle = DRAWSTYLE_HIDDEN; SG7_Short.PrimaryColor = RGB(174, 74, 213); SG7_Short.LineWidth = 2;
         
+        // Hidden by default - different scale than price levels
         SG8_NetVol.Name = "Net GEX (Vol)"; SG8_NetVol.DrawStyle = DRAWSTYLE_HIDDEN; SG8_NetVol.PrimaryColor = RGB(200, 200, 200);
         SG9_NetOI.Name = "Net GEX (OI)"; SG9_NetOI.DrawStyle = DRAWSTYLE_HIDDEN; SG9_NetOI.PrimaryColor = RGB(150, 150, 150);
         
