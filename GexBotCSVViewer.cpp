@@ -263,13 +263,22 @@ void ReloadFiles(SCStudyInterfaceRef sc, ViewerData* data, const std::string& ba
 
 float GetValue(const std::map<SCDateTime, float>& map, SCDateTime targetTime)
 {
+    // Time Filter: Don't draw outside 09:30 - 16:00
+    // This prevents flat lines extending overnight
+    int time = targetTime.GetTime();
+    if (time < HMS_TIME(9, 30, 0) || time > HMS_TIME(16, 0, 0))
+        return -FLT_MAX;
+
     if (map.empty()) return -FLT_MAX;
     auto it = map.upper_bound(targetTime);
     if (it == map.begin()) return -FLT_MAX;
     --it;
     
-    // Forward fill indefinitely - no time limit
-    // Data persists until the next data point
+    // Check if the data point is from a previous day (don't connect yesterday's close to today's open)
+    if (it->first.GetDate() != targetTime.GetDate())
+        return -FLT_MAX;
+
+    // Forward fill indefinitely within the same day
     return it->second;
 }
 
