@@ -102,7 +102,25 @@ SCSFExport scsf_GexBotDataCollector(SCStudyInterfaceRef sc)
     int EndTime = EndTimeInput.GetTime();
 
     if (CurrentTime < StartTime || CurrentTime > EndTime)
+    {
+        // Debug: Log why we are skipping (only once per minute to avoid spam)
+        if (CurrentDateTime.GetSecond() == 0) 
+        {
+             SCString msg;
+             msg.Format("GexCollector: Outside trading hours. Current=%d, Start=%d, End=%d", 
+                 CurrentTime, StartTime, EndTime);
+             // sc.AddMessageToLog(msg, 0); // Uncomment to debug
+        }
         return;
+    }
+    
+    // Debug: Log when we ARE recording late in the day (after 15:55)
+    if (CurrentTime > HMS_TIME(15, 55, 0))
+    {
+         SCString msg;
+         msg.Format("GexCollector: Recording active! Current=%d, EndLimit=%d", CurrentTime, EndTime);
+         sc.AddMessageToLog(msg, 0);
+    }
 
     // Day Filter: Exclude Weekends (Sunday=0, Saturday=6)
     int dayOfWeek = CurrentDateTime.GetDayOfWeek();
