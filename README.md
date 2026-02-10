@@ -12,12 +12,12 @@ graph TD
         direction TB
         subgraph Chart 1 - Data Source
             GexBotAPI[GexBot API Study] -->|Subgraphs 0-8| Collector[GexBotDataCollector]
-            Collector -->|Writes row every 1-5s| CSV[(CSV File\n/Tickers Date/Ticker.csv)]
+            Collector -->|Writes row every 1-5s| CSV[("CSV File<br/>/Tickers Date/Ticker.csv")]
         end
         
         subgraph Chart 2 - Visualization
             CSV -->|Reads new rows| Viewer[GexBotCSVViewer]
-            Viewer -->|Plots| GexLines[Unified GEX Lines\n(Walls, Gamma, etc)]
+            Viewer -->|Plots| GexLines["Unified GEX Lines<br/>(Walls, Gamma, etc)"]
         end
     end
 ```
