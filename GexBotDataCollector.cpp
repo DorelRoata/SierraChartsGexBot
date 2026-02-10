@@ -163,16 +163,39 @@ SCSFExport scsf_GexBotDataCollector(SCStudyInterfaceRef sc)
     double NetVol = SG_NetVol[SrcIndex];
     double NetOI = SG_NetOI[SrcIndex];
     
-    // Get Spot price from the LAST bar of the chart
-    // Using SC_HIGH as SC_CLOSE returns incorrect values on some chart configurations
-    int lastBarIndex = sc.ArraySize - 1;
-    double Spot = sc.BaseData[SC_HIGH][lastBarIndex];
+    // Get Spot Price - Try SC_LAST (Last Trade) first, fallback to SC_OPEN if invalid
+    // This handles charts where Close/High might be repurposed (e.g. Volume bars)
+    double Spot = sc.BaseData[SC_LAST][sc.Index];
+    
+    // Sanity check for ES/Indices (Price > 1000)
+    // If SC_LAST is suspiciously low (like 189 or 307), try SC_OPEN
+    if (Spot < 500.0 && sc.BaseData[SC_OPEN][sc.Index] > 500.0)
+    {
+        Spot = sc.BaseData[SC_OPEN][sc.Index];
+    }
+    
+    // If still bad, try SC_HIGH (sometimes reliable on weird charts)
+    if (Spot < 500.0 && sc.BaseData[SC_HIGH][sc.Index] > 500.0)
+    {
+        Spot = sc.BaseData[SC_HIGH][sc.Index];
+    }
 
-    // Debug: Log values to SC message log (disable after confirming it works)
-    SCString debugMsg;
-    debugMsg.Format("GexCollector: Spot=%.2f, Z=%.2f, CallV=%.2f, PutV=%.2f",
-        Spot, Zero, CallVol, PutVol);
-    sc.AddMessageToLog(debugMsg, 0);
+    // Debug: Log values to SC message log
+    // Only log every 10th write to avoid spamming, or if Spot looks wrong
+    if (Spot < 500.0) 
+    {
+        SCString debugMsg;
+        debugMsg.Format("GexCollector WARNING: Suspicious Spot Price %.2f! (Open=%.2f, High=%.2f, Close=%.2f)",
+            Spot, sc.BaseData[SC_OPEN][sc.Index], sc.BaseData[SC_HIGH][sc.Index], sc.BaseData[SC_CLOSE][sc.Index]);
+        sc.AddMessageToLog(debugMsg, 1); // 1 = Popup alert/Attention
+    }
+    else
+    {
+         // Normal debug log
+         SCString debugMsg;
+         debugMsg.Format("GexCollector: Spot=%.2f, Z=%.2f, CallV=%.2f", Spot, Zero, CallVol);
+         sc.AddMessageToLog(debugMsg, 0);
+    }
 
     // CSV Output
     std::string ticker = TickerInput.GetString();
