@@ -4,20 +4,41 @@ This project provides a robust integration between GexBot data and Sierra Chart,
 
 ## 🏗️ Architecture
 
-The system consists of two independent studies (DLLs) that work in a **Producer-Consumer** relationship:
+The system consists of two independent studies (DLLs) that work in a **Producer-Consumer** relationship.
+
+```mermaid
+graph TD
+    subgraph Sierra Chart Instance
+        direction TB
+        subgraph Chart 1 - Data Source
+            GexBotAPI[GexBot API Study] -->|Subgraphs 0-8| Collector[GexBotDataCollector]
+            Collector -->|Writes row every 1-5s| CSV[(CSV File\n/Tickers Date/Ticker.csv)]
+        end
+        
+        subgraph Chart 2 - Visualization
+            CSV -->|Reads new rows| Viewer[GexBotCSVViewer]
+            Viewer -->|Plots| GexLines[Unified GEX Lines\n(Walls, Gamma, etc)]
+        end
+    end
+```
 
 ### 1. Producer: `GexBotDataCollector`
 *   **Role:** Runs on the chart that has the GexBot API connected.
 *   **Function:** Reads the subgraph data from the GexBot API study, formats it, and writes it to a local CSV file.
 *   **Format:** Creates daily files automatically (e.g., `Tickers 02.09.2026/ES_SPX.csv`).
-*   **Performance:** Lightweight write operation throttled to a user-defined interval (default 10s).
+*   **Performance:** Lightweight write operation throttled to a user-defined interval (default 10s, recommended 1-5s for high res).
 *   **Timestamps:** Uses real-time wall clock for sub-bar resolution.
+*   **Robustness:** Includes file locking protection and smart Spot Price detection (Auto-detects Price vs Volume bars).
 
 ### 2. Consumer: `GexBotCSVViewer`
 *   **Role:** Runs on **any** chart where you want to view the history.
 *   **Function:** Reads the CSV files created by the Collector and plots them as historical subgraphs.
 *   **Integration:** Can be used on 1-minute, 5-minute, or any other timeframe charts.
 *   **Optimization:** Uses **Incremental Reading** technology. It tracks the file size and only reads new data appended since the last check, ensuring O(1) performance even with large datasets.
+*   **Smart Rendering:** 
+    *   Forward-fills data indefinitely (no disappearing lines).
+    *   **Time Filter:** Only draws lines during market hours (09:30 - 16:00) to prevent flat lines overnight.
+    *   **Auto-Hide:** Hides "State Package" subgraphs by default to prevent Y-axis scaling issues for Classic users.
 
 ## 🚀 Setup & Installation
 
@@ -44,7 +65,7 @@ Ensure you have the GexBot API study installed and working on a chart in Sierra 
     *   **Source Study ID:** The ID of the GexBot API study on that chart.
     *   **Ticker Name:** `ES_SPX` (or your specific ticker).
     *   **Output Directory:** `C:\GexBot\Data` (Ensure this folder exists or let the study create it).
-    *   **Write Interval:** `10` seconds (Recommended).
+    *   **Write Interval:** `5` seconds (Recommended for high resolution).
 
 #### Step B: Setup the Viewer (The "Player")
 1.  Open any chart where you want to see the data (e.g., a 5-minute ES chart).
@@ -53,8 +74,8 @@ Ensure you have the GexBot API study installed and working on a chart in Sierra 
 4.  Open the **Settings**:
     *   **Ticker:** Must match what you set in the Collector (e.g., `ES_SPX`).
     *   **Local CSV Path:** Must match the Collector's output path (`C:\GexBot\Data`).
-    *   **Days to Load:** `2` (Loads today and yesterday). Increase this if you need more history (e.g., `30` for a month), but be aware the initial load will take a second.
-    *   **Refresh Interval:** `10` seconds (Should match or be slightly longer than the Collector).
+    *   **Days to Load:** `2` (Loads today and yesterday). Increase this if you need more history (e.g., `30` for a month).
+    *   **Refresh Interval:** `5` seconds (Should match the Collector).
 
 ## 🎛️ Configuration Options
 
@@ -106,12 +127,17 @@ The Viewer plots the following subgraphs on your chart:
 | **SG3** | Zero Gamma | Price level line |
 | **SG4** | Major Call Gamma (OI) | Price level line |
 | **SG5** | Major Put Gamma (OI) | Price level line |
-| **SG6** | Major Long Gamma | *(Optional)* Price level line |
-| **SG7** | Major Short Gamma | *(Optional)* Price level line |
+| **SG6** | Major Long Gamma | *(State Package)* Hidden by default |
+| **SG7** | Major Short Gamma | *(State Package)* Hidden by default |
 | **SG8** | Net GEX (Vol) | Hidden by default (different scale) |
 | **SG9** | Net GEX (OI) | Hidden by default (different scale) |
 
-> **Note:** The **Spot Price** is recorded in the CSV for reference but is **not graphed** by the Viewer (it comes from the chart's own price data).
+## 🧩 Advanced: Dual Package Setup
+If you need to view both **Classic** and **State** data packages simultaneously, you should run two separate data streams:
+
+1.  **Collector A:** Point to GexBot Classic study -> Ticker Name: `ES_CLASSIC`
+2.  **Collector B:** Point to GexBot State study -> Ticker Name: `ES_STATE`
+3.  **Viewers:** Add two Viewer studies to your chart, one loading `ES_CLASSIC` and one loading `ES_STATE`.
 
 ## ⚠️ Y-Axis Scaling Tips
 
@@ -125,9 +151,4 @@ If you enable all subgraphs at once, the Y-axis may "freak out" trying to fit ev
 1.  **Keep Net GEX subgraphs hidden** (they are hidden by default) if you only care about price levels.
 2.  **Use a separate Graph Region** for Net GEX:
     *   In the Viewer study settings, set SG8/SG9 to a different Graph Region (e.g., Region 2).
-3.  **Use Manual Scale** if Auto Scale causes issues:
-    *   Right-click the chart -> **Chart Settings** -> **Scale** tab.
-    *   Set a manual range for the Y-axis.
-
-## ⚡ Performance Note
-The Viewer uses an **Incremental Read** strategy. It remembers the file position (offset) where it last stopped reading. On every update, it seeks directly to that position and only parses the few new lines added. This ensures zero CPU overhead during the trading day, even when the data file grows large.
+3.  **Use Manual Scale** if Auto Scale causes issues.
