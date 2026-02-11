@@ -96,7 +96,9 @@ Ensure you have the GexBot API study installed and working on a chart in Sierra 
 | **Local CSV Path** | Base folder to search for data. | `C:\GexBot\Data` |
 | **Refresh Interval** | How often to check the file for new data. | `10s` |
 | **Days to Load** | Number of past days to load into history. | `2` |
-| **UTC Offset** | Offset in hours to adjust the timestamp if needed. | `0` |
+| **UTC Offset** | Timezone adjustment. **Keep at `0`** (see warning below). | `0` |
+
+> ⚠️ **UTC Offset Warning:** The CSV timestamps are encoded using your **system clock** (local time). If your Windows timezone matches your Sierra Chart timezone (e.g., both US Eastern), leave UTC Offset at **`0`**. Setting it to `-5` will **double-correct** the timezone and shift your data 5 hours backwards, causing most lines to disappear.
 
 ## 📊 Subgraph Mapping
 
