@@ -55,6 +55,7 @@ SCSFExport scsf_GexBotDataCollector(SCStudyInterfaceRef sc)
     SCInputRef StartTimeInput = sc.Input[4];
     SCInputRef EndTimeInput = sc.Input[5];
     SCInputRef WriteIntervalSecInput = sc.Input[6];
+    SCInputRef DebugLoggingInput = sc.Input[7];
     
     // Internal Persistence
     SCString& LastLogTime = sc.GetPersistentSCString(1);
@@ -85,6 +86,9 @@ SCSFExport scsf_GexBotDataCollector(SCStudyInterfaceRef sc)
         
         WriteIntervalSecInput.Name = "Write Interval (Seconds)";
         WriteIntervalSecInput.SetInt(10);
+
+        DebugLoggingInput.Name = "Enable Debug Logging";
+        DebugLoggingInput.SetYesNo(0);
 
         return;
     }
@@ -140,78 +144,78 @@ SCSFExport scsf_GexBotDataCollector(SCStudyInterfaceRef sc)
     int ChartID = ChartIDInput.GetInt();
     int StudyID = StudyIDInput.GetInt();
     if (ChartID == 0) ChartID = sc.ChartNumber;
+    bool debugLog = DebugLoggingInput.GetYesNo() != 0;
 
-    // Mapped via "Proposed Subgraph Mapping" in README
-    // SG1 -> Index 0: Major Call Gamma by Volume
-    // SG2 -> Index 1: Major Put Gamma by Volume
-    // SG3 -> Index 2: Zero Gamma
-    // SG4 -> Index 3: Major Call Gamma by OI
-    // SG5 -> Index 4: Major Put Gamma by OI
-    // SG6 -> Index 5: Major Long Gamma
-    // SG7 -> Index 6: Major Short Gamma
-    // SG8 -> Index 7: Net GEX Volume
-    // SG9 -> Index 8: Net GEX OI
+    // =============================================================
+    // ACTUAL Subgraph Mapping from GexBotTerminalAPI.cpp (scsf_GexBotAPI)
+    // The source DLL defines subgraphs in THIS order:
+    //   [0]  LongGamma        = Greeks.major_long_gamma
+    //   [1]  ShortGamma       = Greeks.major_short_gamma
+    //   [2]  MajorPositive    = Greeks.major_positive
+    //   [3]  MajorNegative    = Greeks.major_negative
+    //   [4]  Zero             = ProfileMeta.zero_gamma / Majors.zero_gamma
+    //   [5]  MajorPosVol      = Majors.mpos_vol   (Call Wall by Volume)
+    //   [6]  MajorNegVol      = Majors.mneg_vol   (Put Wall by Volume)
+    //   [7]  MajorPosOi       = Majors.mpos_oi    (Call Wall by OI)
+    //   [8]  MajorNegOi       = Majors.mneg_oi    (Put Wall by OI)
+    //   [9]  GreekMajorPos    = Greeks.major_positive (duplicate of [2])
+    //   [10] GreekMajorNeg    = Greeks.major_negative (duplicate of [3])
+    //   [11] MajorLongGamma   = Greeks.major_long_gamma (duplicate of [0])
+    //   [12] MajorShortGamma  = Greeks.major_short_gamma (duplicate of [1])
+    // =============================================================
 
-    SCFloatArray SG_CallVol, SG_PutVol, SG_Zero, SG_CallOI, SG_PutOI, SG_Long, SG_Short, SG_NetVol, SG_NetOI;
+    SCFloatArray SG_LongGamma, SG_ShortGamma, SG_MajorPos, SG_MajorNeg;
+    SCFloatArray SG_Zero, SG_CallVol, SG_PutVol, SG_CallOI, SG_PutOI;
     
-    // Get Arrays
-    sc.GetStudyArrayFromChartUsingID(ChartID, StudyID, 0, SG_CallVol);
-    sc.GetStudyArrayFromChartUsingID(ChartID, StudyID, 1, SG_PutVol);
-    sc.GetStudyArrayFromChartUsingID(ChartID, StudyID, 2, SG_Zero);
-    sc.GetStudyArrayFromChartUsingID(ChartID, StudyID, 3, SG_CallOI);
-    sc.GetStudyArrayFromChartUsingID(ChartID, StudyID, 4, SG_PutOI);
-    sc.GetStudyArrayFromChartUsingID(ChartID, StudyID, 5, SG_Long);
-    sc.GetStudyArrayFromChartUsingID(ChartID, StudyID, 6, SG_Short);
-    sc.GetStudyArrayFromChartUsingID(ChartID, StudyID, 7, SG_NetVol);
-    sc.GetStudyArrayFromChartUsingID(ChartID, StudyID, 8, SG_NetOI);
+    sc.GetStudyArrayFromChartUsingID(ChartID, StudyID, 0, SG_LongGamma);   // [0] Long Gamma
+    sc.GetStudyArrayFromChartUsingID(ChartID, StudyID, 1, SG_ShortGamma);  // [1] Short Gamma
+    // [2] MajorPositive - skip (Greek, not needed in CSV)
+    // [3] MajorNegative - skip (Greek, not needed in CSV)
+    sc.GetStudyArrayFromChartUsingID(ChartID, StudyID, 4, SG_Zero);        // [4] Zero Gamma
+    sc.GetStudyArrayFromChartUsingID(ChartID, StudyID, 5, SG_CallVol);     // [5] Call Wall Vol
+    sc.GetStudyArrayFromChartUsingID(ChartID, StudyID, 6, SG_PutVol);      // [6] Put Wall Vol
+    sc.GetStudyArrayFromChartUsingID(ChartID, StudyID, 7, SG_CallOI);      // [7] Call Wall OI
+    sc.GetStudyArrayFromChartUsingID(ChartID, StudyID, 8, SG_PutOI);       // [8] Put Wall OI
 
     // Reading values at current index
-    // Note: The source study array must be aligned with this chart's index or we grab the last value.
     // Use ArraySize-1 to get the latest value from the source study regardless of alignment
     int SrcIndex = SG_CallVol.GetArraySize() - 1;
     if (SrcIndex < 0) return;
 
-    double CallVol = SG_CallVol[SrcIndex];
-    double PutVol = SG_PutVol[SrcIndex];
-    double Zero = SG_Zero[SrcIndex];
-    double CallOI = SG_CallOI[SrcIndex];
-    double PutOI = SG_PutOI[SrcIndex];
-    double Long = SG_Long[SrcIndex];
-    double Short = SG_Short[SrcIndex];
-    double NetVol = SG_NetVol[SrcIndex];
-    double NetOI = SG_NetOI[SrcIndex];
+    double CallVol  = SG_CallVol[SrcIndex];
+    double PutVol   = SG_PutVol[SrcIndex];
+    double Zero     = SG_Zero[SrcIndex];
+    double CallOI   = SG_CallOI[SrcIndex];
+    double PutOI    = SG_PutOI[SrcIndex];
+    double Long     = SG_LongGamma[SrcIndex];
+    double Short    = SG_ShortGamma[SrcIndex];
+    // Net GEX is not a direct subgraph from the API study — it's in the CSV only
+    // The API study writes net values via UpdateMapsAndWriteCSV, not via subgraph
+    // So we skip NetVol/NetOI here — the Collector should only record what is visible as SGs
+    double NetVol = 0.0;  // Not available as a subgraph
+    double NetOI  = 0.0;  // Not available as a subgraph
     
     // Get Spot Price - Try SC_LAST (Last Trade) first, fallback to SC_OPEN if invalid
-    // This handles charts where Close/High might be repurposed (e.g. Volume bars)
     double Spot = sc.BaseData[SC_LAST][sc.Index];
     
-    // Sanity check for ES/Indices (Price > 1000)
-    // If SC_LAST is suspiciously low (like 189 or 307), try SC_OPEN
+    // Fallback chain for abnormal chart types
     if (Spot < 500.0 && sc.BaseData[SC_OPEN][sc.Index] > 500.0)
-    {
         Spot = sc.BaseData[SC_OPEN][sc.Index];
-    }
-    
-    // If still bad, try SC_HIGH (sometimes reliable on weird charts)
     if (Spot < 500.0 && sc.BaseData[SC_HIGH][sc.Index] > 500.0)
-    {
         Spot = sc.BaseData[SC_HIGH][sc.Index];
-    }
 
-    // Debug: Log values to SC message log
-    // Only log every 10th write to avoid spamming, or if Spot looks wrong
+    // Debug logging (controlled by input toggle)
     if (Spot < 500.0) 
     {
         SCString debugMsg;
-        debugMsg.Format("GexCollector WARNING: Suspicious Spot Price %.2f! (Open=%.2f, High=%.2f, Close=%.2f)",
+        debugMsg.Format("GexCollector WARNING: Suspicious Spot=%.2f Open=%.2f High=%.2f Close=%.2f",
             Spot, sc.BaseData[SC_OPEN][sc.Index], sc.BaseData[SC_HIGH][sc.Index], sc.BaseData[SC_CLOSE][sc.Index]);
-        sc.AddMessageToLog(debugMsg, 1); // 1 = Popup alert/Attention
+        sc.AddMessageToLog(debugMsg, 1);
     }
-    else
+    else if (debugLog)
     {
-         // Normal debug log
          SCString debugMsg;
-         debugMsg.Format("GexCollector: Spot=%.2f, Z=%.2f, CallV=%.2f", Spot, Zero, CallVol);
+         debugMsg.Format("GexCollector: Spot=%.2f Z=%.2f CallV=%.2f Long=%.2f", Spot, Zero, CallVol, Long);
          sc.AddMessageToLog(debugMsg, 0);
     }
 

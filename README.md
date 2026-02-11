@@ -100,22 +100,26 @@ Ensure you have the GexBot API study installed and working on a chart in Sierra 
 
 ## 📊 Subgraph Mapping
 
-### GexBot API Study (Source)
-The Collector reads from the GexBot API study using this subgraph order:
+### GexBot API Study (Source DLL: `scsf_GexBotAPI`)
+The source DLL defines **13 subgraphs** in the following order. The Collector reads from indices `[0], [1], [4]-[8]`:
 
-| Index | Subgraph Name | Description |
-| :---: | :--- | :--- |
-| **0** | Major Call Gamma (Vol) | Call wall by volume |
-| **1** | Major Put Gamma (Vol) | Put wall by volume |
-| **2** | Zero Gamma | Zero gamma price level |
-| **3** | Major Call Gamma (OI) | Call wall by open interest |
-| **4** | Major Put Gamma (OI) | Put wall by open interest |
-| **5** | Major Long Gamma | *(Optional)* Long gamma level |
-| **6** | Major Short Gamma | *(Optional)* Short gamma level |
-| **7** | Net GEX (Vol) | Net gamma exposure by volume |
-| **8** | Net GEX (OI) | Net gamma exposure by open interest |
+| Index | Variable Name | Data Source | Collector Reads? |
+| :---: | :--- | :--- | :---: |
+| **[0]** | LongGamma | `Greeks.major_long_gamma` | ✅ → Long |
+| **[1]** | ShortGamma | `Greeks.major_short_gamma` | ✅ → Short |
+| **[2]** | MajorPositive | `Greeks.major_positive` | ❌ (Greek) |
+| **[3]** | MajorNegative | `Greeks.major_negative` | ❌ (Greek) |
+| **[4]** | Zero | `ProfileMeta.zero_gamma` | ✅ → Zero |
+| **[5]** | MajorPosVol | `Majors.mpos_vol` | ✅ → Call Wall (Vol) |
+| **[6]** | MajorNegVol | `Majors.mneg_vol` | ✅ → Put Wall (Vol) |
+| **[7]** | MajorPosOi | `Majors.mpos_oi` | ✅ → Call Wall (OI) |
+| **[8]** | MajorNegOi | `Majors.mneg_oi` | ✅ → Put Wall (OI) |
+| **[9]** | GreekMajorPos | *(duplicate of [2])* | ❌ |
+| **[10]** | GreekMajorNeg | *(duplicate of [3])* | ❌ |
+| **[11]** | MajorLongGamma | *(duplicate of [0])* | ❌ |
+| **[12]** | MajorShortGamma | *(duplicate of [1])* | ❌ |
 
-> **Note:** Major Long Gamma (SG6) and Major Short Gamma (SG7) are **optional** subgraphs. If not enabled in the GexBot API study, they will record as 0.
+> **Note:** Net GEX (Vol/OI) are **not subgraphs** — they are computed internally and written to CSV by the API study's `UpdateMapsAndWriteCSV` function.
 
 ### CSV Viewer (Output)
 The Viewer plots the following subgraphs on your chart:

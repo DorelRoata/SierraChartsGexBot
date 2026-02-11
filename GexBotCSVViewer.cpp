@@ -22,7 +22,8 @@ struct ViewerData
     std::map<SCDateTime, float> negVolMap;
     std::map<SCDateTime, float> posOiMap;
     std::map<SCDateTime, float> negOiMap;
-    std::map<SCDateTime, float> netMap;
+    std::map<SCDateTime, float> netVolMap;
+    std::map<SCDateTime, float> netOiMap;
     std::map<SCDateTime, float> longMap;
     std::map<SCDateTime, float> shortMap;
     std::map<SCDateTime, float> majPosMap;
@@ -36,17 +37,6 @@ struct ViewerData
     
     // File Tracking for Incremental Updates
     std::map<std::string, std::streampos> FileOffsets; 
-
-    // Last known values for forward filling
-    float lastZero = 0;
-    float lastPosVol = 0;
-    float lastNegVol = 0;
-    float lastPosOi = 0;
-    float lastNegOi = 0;
-    float lastLong = 0;
-    float lastShort = 0;
-    float lastMajPos = 0;
-    float lastMajNeg = 0;
 };
 
 // =========================
@@ -187,7 +177,8 @@ void LoadViewerCSV(const std::string& fullPath, int tzOffsetHours, ViewerData* d
         double sht   = (fieldCount > 11) ? values[11] : 0;
         double mjp   = (fieldCount > 12) ? values[12] : 0;
         double mjn   = (fieldCount > 13) ? values[13] : 0;
-        double netv  = (fieldCount > 7)  ? values[7] : 0; // mapped to field 7 based on header
+        double netv  = (fieldCount > 7)  ? values[7] : 0;
+        double netoi = (fieldCount > 8)  ? values[8] : 0;
         
         if (!std::isnan(zero) && zero != 0) { data->zeroMap[dt] = (float)zero; }
         if (!std::isnan(posv) && posv != 0) { data->posVolMap[dt] = (float)posv; }
@@ -198,12 +189,8 @@ void LoadViewerCSV(const std::string& fullPath, int tzOffsetHours, ViewerData* d
         if (!std::isnan(sht) && sht != 0) { data->shortMap[dt] = (float)sht; }
         if (!std::isnan(mjp) && mjp != 0) { data->majPosMap[dt] = (float)mjp; }
         if (!std::isnan(mjn) && mjn != 0) { data->majNegMap[dt] = (float)mjn; }
-        if (!std::isnan(netv) && netv != 0) { data->netMap[dt] = (float)netv; }
-        
-        // Update last cached values
-        data->lastZero = (float)zero; 
-        data->lastPosVol = (float)posv;
-        data->lastNegVol = (float)negv;
+        if (!std::isnan(netv) && netv != 0) { data->netVolMap[dt] = (float)netv; }
+        if (!std::isnan(netoi) && netoi != 0) { data->netOiMap[dt] = (float)netoi; }
         
     }
     
@@ -231,7 +218,8 @@ void ReloadFiles(SCStudyInterfaceRef sc, ViewerData* data, const std::string& ba
         data->shortMap.clear();
         data->majPosMap.clear();
         data->majNegMap.clear();
-        data->netMap.clear();
+        data->netVolMap.clear();
+        data->netOiMap.clear();
         
         data->FileOffsets.clear(); // Reset offsets so we re-read revised files from scratch
         
@@ -374,7 +362,8 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
     float vNegOi = GetValue(data->negOiMap, now);
     float vLong = GetValue(data->longMap, now);
     float vShort = GetValue(data->shortMap, now);
-    float vNetVol = GetValue(data->netMap, now); 
+    float vNetVol = GetValue(data->netVolMap, now); 
+    float vNetOi = GetValue(data->netOiMap, now);
     
     if (vPosVol != -FLT_MAX) SG1_CallVol[sc.Index] = vPosVol;
     if (vNegVol != -FLT_MAX) SG2_PutVol[sc.Index] = vNegVol;
@@ -384,5 +373,6 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
     if (vLong != -FLT_MAX) SG6_Long[sc.Index] = vLong;
     if (vShort != -FLT_MAX) SG7_Short[sc.Index] = vShort;
     if (vNetVol != -FLT_MAX) SG8_NetVol[sc.Index] = vNetVol;
+    if (vNetOi != -FLT_MAX) SG9_NetOI[sc.Index] = vNetOi;
     
 }
