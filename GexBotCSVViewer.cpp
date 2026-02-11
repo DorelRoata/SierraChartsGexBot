@@ -338,21 +338,34 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
         return;
     }
 
-    // Refresh Logic (Last Bar Only)
-    // We try to reload data periodically
-    if (sc.Index == sc.ArraySize - 1)
+    // ================================================================
+    // DATA LOADING (First Bar of Update Cycle Only)
+    // ================================================================
+    // We load data at the START of the update cycle, not the end.
+    // This ensures all bars processed in this cycle have access to data.
+    if (sc.Index == sc.UpdateStartIndex)
     {
         double timeSinceLast = (sc.CurrentSystemDateTime - data->LastUpdate).GetAsDouble() * 86400.0;
+        bool needsLoad = (data->LastUpdate.GetAsDouble() == 0.0 || timeSinceLast >= RefreshInterval.GetInt());
         
-        // Initial load or periodic refresh
-        if (data->LastUpdate.GetAsDouble() == 0.0 || timeSinceLast >= RefreshInterval.GetInt())
+        if (needsLoad)
         {
+            size_t prevSize = data->zeroMap.size();
             ReloadFiles(sc, data, CsvPathInput.GetString(), TickerInput.GetString(), DaysToLoad.GetInt(), TZOffset.GetInt());
             data->LastUpdate = sc.CurrentSystemDateTime;
+            
+            // If data was loaded/changed and we're not starting from bar 0,
+            // force a full recalculation so ALL bars get drawn, not just new ones.
+            if (data->zeroMap.size() != prevSize && sc.UpdateStartIndex > 0)
+            {
+                sc.UpdateStartIndex = 0;
+            }
         }
     }
-
-    // Render Logic
+    
+    // ================================================================
+    // RENDER LOGIC (Every Bar)
+    // ================================================================
     SCDateTime now = sc.BaseDateTimeIn[sc.Index];
 
     float vZero = GetValue(data->zeroMap, now);
