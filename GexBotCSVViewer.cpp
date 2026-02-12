@@ -10,6 +10,8 @@
 
 SCDLLName("GEX_CSV_VIEWER")
 
+#define VIEWER_VERSION "2.1.0"  // 2026-02-12: Auto TZ, full-bar render, Net OI
+
 // =========================
 //        STRUCTURES
 // =========================
@@ -303,7 +305,7 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
 
     if (sc.SetDefaults)
     {
-        sc.GraphName = "GexBot CSV Viewer";
+        sc.GraphName = "GexBot CSV Viewer v" VIEWER_VERSION;
         sc.AutoLoop = 1; 
         sc.GraphRegion = 0;
         sc.ValueFormat = 2;
@@ -361,7 +363,7 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
             // Auto-detect chart timezone or use manual override
             int tzOff = TZOffset.GetInt();
             if (tzOff == 99)
-                tzOff = (int)(sc.TimeScaleAdjustment / 3600); // auto-detect from chart settings
+                tzOff = (int)(sc.TimeScaleAdjustment.GetAsDouble() * 24.0); // auto-detect from chart settings
             
             ReloadFiles(sc, data, CsvPathInput.GetString(), TickerInput.GetString(), DaysToLoad.GetInt(), tzOff);
             data->LastUpdate = sc.CurrentSystemDateTime;
@@ -381,7 +383,7 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
     SCDateTime now = sc.BaseDateTimeIn[sc.Index];
     int tzOff = TZOffset.GetInt();
     if (tzOff == 99)
-        tzOff = (int)(sc.TimeScaleAdjustment / 3600); // auto-detect from chart settings
+        tzOff = (int)(sc.TimeScaleAdjustment.GetAsDouble() * 24.0); // auto-detect from chart settings
 
     float vZero = GetValue(data->zeroMap, now, tzOff);
     float vPosVol = GetValue(data->posVolMap, now, tzOff);

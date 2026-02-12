@@ -7,6 +7,8 @@
 
 SCDLLName("GEX_DATA_COLLECTOR")
 
+#define COLLECTOR_VERSION "2.1.0"  // 2026-02-12: Fixed subgraph mapping, debug toggle
+
 // =========================
 //     FILE I/O HELPERS
 // =========================
@@ -62,7 +64,7 @@ SCSFExport scsf_GexBotDataCollector(SCStudyInterfaceRef sc)
 
     if (sc.SetDefaults)
     {
-        sc.GraphName = "GexBot Data Collector";
+        sc.GraphName = "GexBot Data Collector v" COLLECTOR_VERSION;
         sc.AutoLoop = 1; 
         sc.GraphRegion = 0;
         
