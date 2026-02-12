@@ -249,12 +249,19 @@ void ReloadFiles(SCStudyInterfaceRef sc, ViewerData* data, const std::string& ba
     }
 }
 
-float GetValue(const std::map<SCDateTime, float>& map, SCDateTime targetTime)
+float GetValue(const std::map<SCDateTime, float>& map, SCDateTime targetTime, int chartTzOffsetHours)
 {
-    // Time Filter: Don't draw outside 09:30 - 16:00
-    // This prevents flat lines extending overnight
+    // Time Filter: Don't draw outside US market hours (09:30 - 16:00 EST)
+    // Adjust the filter window based on the chart's timezone offset from EST (-5)
+    // If chart is in UTC (offset=0): market hours = 14:30-21:00 UTC
+    // If chart is in EST (offset=-5): market hours = 09:30-16:00 EST
+    int estOffset = -5; // EST is UTC-5
+    int shiftHours = chartTzOffsetHours - estOffset; // e.g., UTC(0) - EST(-5) = +5 hours
+    int marketOpen = HMS_TIME(9 + shiftHours, 30, 0);
+    int marketClose = HMS_TIME(16 + shiftHours, 0, 0);
+    
     int time = targetTime.GetTime();
-    if (time < HMS_TIME(9, 30, 0) || time > HMS_TIME(16, 0, 0))
+    if (time < marketOpen || time > marketClose)
         return -FLT_MAX;
 
     if (map.empty()) return -FLT_MAX;
@@ -320,7 +327,7 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
         CsvPathInput.Name = "Local CSV Path"; CsvPathInput.SetString("C:\\GexBot\\Data");
         RefreshInterval.Name = "Refresh Interval (sec)"; RefreshInterval.SetInt(10);
         DaysToLoad.Name = "Days to Load"; DaysToLoad.SetInt(2);
-        TZOffset.Name = "UTC Offset (hours)"; TZOffset.SetInt(0);
+        TZOffset.Name = "Chart Timezone (UTC Offset)"; TZOffset.SetInt(0); // 0=UTC, -5=EST, -6=CST
 
         return;
     }
@@ -367,16 +374,17 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
     // RENDER LOGIC (Every Bar)
     // ================================================================
     SCDateTime now = sc.BaseDateTimeIn[sc.Index];
+    int tzOff = TZOffset.GetInt();
 
-    float vZero = GetValue(data->zeroMap, now);
-    float vPosVol = GetValue(data->posVolMap, now);
-    float vNegVol = GetValue(data->negVolMap, now);
-    float vPosOi = GetValue(data->posOiMap, now);
-    float vNegOi = GetValue(data->negOiMap, now);
-    float vLong = GetValue(data->longMap, now);
-    float vShort = GetValue(data->shortMap, now);
-    float vNetVol = GetValue(data->netVolMap, now); 
-    float vNetOi = GetValue(data->netOiMap, now);
+    float vZero = GetValue(data->zeroMap, now, tzOff);
+    float vPosVol = GetValue(data->posVolMap, now, tzOff);
+    float vNegVol = GetValue(data->negVolMap, now, tzOff);
+    float vPosOi = GetValue(data->posOiMap, now, tzOff);
+    float vNegOi = GetValue(data->negOiMap, now, tzOff);
+    float vLong = GetValue(data->longMap, now, tzOff);
+    float vShort = GetValue(data->shortMap, now, tzOff);
+    float vNetVol = GetValue(data->netVolMap, now, tzOff); 
+    float vNetOi = GetValue(data->netOiMap, now, tzOff);
     
     if (vPosVol != -FLT_MAX) SG1_CallVol[sc.Index] = vPosVol;
     if (vNegVol != -FLT_MAX) SG2_PutVol[sc.Index] = vNegVol;
