@@ -327,7 +327,7 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
         CsvPathInput.Name = "Local CSV Path"; CsvPathInput.SetString("C:\\GexBot\\Data");
         RefreshInterval.Name = "Refresh Interval (sec)"; RefreshInterval.SetInt(10);
         DaysToLoad.Name = "Days to Load"; DaysToLoad.SetInt(2);
-        TZOffset.Name = "Chart Timezone (UTC Offset)"; TZOffset.SetInt(0); // 0=UTC, -5=EST, -6=CST
+        TZOffset.Name = "Chart TZ Override (99=Auto)"; TZOffset.SetInt(99); // 99=auto-detect, 0=UTC, -5=EST
 
         return;
     }
@@ -358,7 +358,12 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
         if (needsLoad)
         {
             size_t prevSize = data->zeroMap.size();
-            ReloadFiles(sc, data, CsvPathInput.GetString(), TickerInput.GetString(), DaysToLoad.GetInt(), TZOffset.GetInt());
+            // Auto-detect chart timezone or use manual override
+            int tzOff = TZOffset.GetInt();
+            if (tzOff == 99)
+                tzOff = (int)(sc.TimeScaleAdjustment / 3600); // auto-detect from chart settings
+            
+            ReloadFiles(sc, data, CsvPathInput.GetString(), TickerInput.GetString(), DaysToLoad.GetInt(), tzOff);
             data->LastUpdate = sc.CurrentSystemDateTime;
             
             // If data was loaded/changed and we're not starting from bar 0,
@@ -375,6 +380,8 @@ SCSFExport scsf_GexBotCSVViewer(SCStudyInterfaceRef sc)
     // ================================================================
     SCDateTime now = sc.BaseDateTimeIn[sc.Index];
     int tzOff = TZOffset.GetInt();
+    if (tzOff == 99)
+        tzOff = (int)(sc.TimeScaleAdjustment / 3600); // auto-detect from chart settings
 
     float vZero = GetValue(data->zeroMap, now, tzOff);
     float vPosVol = GetValue(data->posVolMap, now, tzOff);
